@@ -373,12 +373,22 @@ def main():
     try:
         import urllib.request
         urllib.request.urlopen("http://localhost:8080/experiments.json", timeout=2)
+        print("[orchestrator] Dashboard already running.")
     except Exception:
         print("[orchestrator] Starting dashboard server...")
+        # Use the same Python that's running this script
         subprocess.Popen(
             [sys.executable, str(PROJECT_ROOT / "dashboard" / "serve.py")],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,  # detach from parent so it survives orchestrator restart
         )
+        time.sleep(2)  # give it a moment to start
+        try:
+            urllib.request.urlopen("http://localhost:8080/experiments.json", timeout=3)
+            print("[orchestrator] Dashboard started successfully.")
+        except Exception:
+            print("[orchestrator] WARNING: Dashboard may not have started. Run manually:")
+            print(f"  {sys.executable} {PROJECT_ROOT / 'dashboard' / 'serve.py'} &")
 
     # Phase 1: Baseline
     run_baseline(skip=args.skip_baseline)
