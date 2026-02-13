@@ -26,8 +26,10 @@ fi
 # 2. Install Python dependencies
 echo "[setup] Installing Python dependencies..."
 pip install --upgrade pip
-pip install anthropic torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
-pip install numpy requests huggingface_hub
+pip install anthropic numpy requests huggingface_hub
+# Only install PyTorch if not already present (vast.ai images usually have it)
+python -c "import torch; print(f'PyTorch {torch.__version__} already installed')" 2>/dev/null || \
+    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
 
 # 3. Download training data
 echo "[setup] Downloading training data (this takes ~30-60 minutes)..."
