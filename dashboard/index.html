@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPT-2 Training Speedup - Experiment Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
+    --green: #3fb950; --red: #f85149; --yellow: #d29922; --purple: #bc8cff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace; background: var(--bg); color: var(--text); padding: 20px; }
+  h1 { font-size: 1.5em; margin-bottom: 4px; }
+  .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px; border-bottom: 1px solid var(--border); padding-bottom: 16px; }
+  .header-left h1 span { color: var(--accent); }
+  .header-right { text-align: right; color: var(--muted); font-size: 0.85em; }
+  .target-badge { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; font-size: 0.85em; display: inline-block; margin-top: 6px; }
+  .target-badge strong { color: var(--yellow); }
+
+  .stats { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; min-width: 120px; }
+  .stat-card .label { color: var(--muted); font-size: 0.7em; text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-card .value { font-size: 1.3em; font-weight: bold; margin-top: 2px; }
+  .stat-card .value.green { color: var(--green); }
+  .stat-card .value.red { color: var(--red); }
+  .stat-card .value.yellow { color: var(--yellow); }
+  .stat-card .value.accent { color: var(--accent); }
+  .stat-card .sub { color: var(--muted); font-size: 0.7em; margin-top: 1px; }
+
+  .system-bar { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
+  .sys-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; min-width: 150px; flex: 1; }
+  .sys-card .label { color: var(--muted); font-size: 0.7em; text-transform: uppercase; letter-spacing: 0.5px; }
+  .sys-card .bar-bg { height: 6px; background: var(--border); border-radius: 3px; margin-top: 6px; overflow: hidden; }
+  .sys-card .bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
+  .sys-card .bar-fill.green { background: var(--green); }
+  .sys-card .bar-fill.yellow { background: var(--yellow); }
+  .sys-card .bar-fill.red { background: var(--red); }
+  .sys-card .stats-line { display: flex; justify-content: space-between; margin-top: 4px; font-size: 0.8em; }
+  .sys-card .stats-line .val { font-weight: bold; }
+
+  .chart-container { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 24px; position: relative; height: 400px; }
+  .chart-container h2 { font-size: 1em; margin-bottom: 12px; color: var(--muted); }
+  .chart-wrapper { position: relative; height: 360px; width: 100%; }
+
+  .experiments { display: grid; gap: 16px; }
+  .exp-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; transition: border-color 0.2s; }
+  .exp-card:hover { border-color: var(--accent); }
+  .exp-card .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .exp-card .name { font-weight: bold; font-size: 1.05em; }
+  .badge { padding: 2px 8px; border-radius: 12px; font-size: 0.75em; font-weight: bold; text-transform: uppercase; }
+  .badge.running { background: rgba(210,153,34,0.2); color: var(--yellow); animation: pulse 2s infinite; }
+  .badge.completed { background: rgba(63,185,80,0.2); color: var(--green); }
+  .badge.failed { background: rgba(248,81,73,0.2); color: var(--red); }
+  .badge.pending { background: rgba(139,148,158,0.2); color: var(--muted); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+  .exp-card .hypothesis { color: var(--muted); font-size: 0.85em; margin-bottom: 10px; font-style: italic; }
+  .exp-card .metrics { display: flex; gap: 20px; flex-wrap: wrap; font-size: 0.85em; }
+  .exp-card .metric { display: flex; flex-direction: column; }
+  .exp-card .metric .mlabel { color: var(--muted); font-size: 0.75em; }
+  .exp-card .metric .mvalue { font-weight: bold; }
+  .exp-card .findings { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.8em; }
+  .exp-card .progress-bar { height: 4px; background: var(--border); border-radius: 2px; margin-top: 10px; overflow: hidden; }
+  .exp-card .progress-bar .fill { height: 100%; background: var(--accent); transition: width 0.3s; }
+  .exp-card .progress-text { color: var(--muted); font-size: 0.75em; margin-top: 4px; text-align: right; }
+  .exp-card .details-toggle { color: var(--accent); font-size: 0.8em; cursor: pointer; margin-top: 8px; user-select: none; }
+  .exp-card .details-toggle:hover { text-decoration: underline; }
+  .exp-card .details { display: none; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 0.8em; }
+  .exp-card .details.open { display: block; }
+  .exp-card .details .detail-section { margin-bottom: 10px; }
+  .exp-card .details .detail-label { color: var(--accent); font-weight: bold; font-size: 0.85em; margin-bottom: 4px; }
+  .exp-card .details .detail-content { color: var(--muted); white-space: pre-wrap; line-height: 1.5; }
+  .exp-card .details .val-table { width: 100%; font-size: 0.9em; border-collapse: collapse; }
+  .exp-card .details .val-table td, .exp-card .details .val-table th { padding: 3px 8px; text-align: left; border-bottom: 1px solid var(--border); }
+  .exp-card .details .val-table th { color: var(--muted); font-weight: normal; }
+
+  .no-data { text-align: center; color: var(--muted); padding: 60px 20px; font-size: 1.1em; }
+  .refresh-indicator { font-size: 0.75em; color: var(--muted); }
+  .speedup-positive { color: var(--green); }
+  .speedup-negative { color: var(--red); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <h1><span>GPT-2</span> Training Speedup Experiments</h1>
+    <div class="target-badge">Target val loss: <strong>&le; 3.3821</strong></div>
+  </div>
+  <div class="header-right">
+    <div class="refresh-indicator" id="refresh-status">Auto-refresh: 10s</div>
+    <div id="last-update"></div>
+  </div>
+</div>
+
+<div class="system-bar" id="system-bar"></div>
+
+<div class="stats" id="stats"></div>
+
+<div class="chart-container">
+  <h2>Validation Loss Curves</h2>
+  <div class="chart-wrapper"><canvas id="lossChart"></canvas></div>
+</div>
+
+<h2 style="font-size:1em; color:var(--muted); margin-bottom:12px;">Experiments</h2>
+<div class="experiments" id="experiments"></div>
+<div class="no-data" id="no-data" style="display:none;">No experiments yet. Start the experiment harness to begin.</div>
+
+<script>
+const COLORS = ['#58a6ff','#3fb950','#f85149','#d29922','#bc8cff','#f778ba','#79c0ff','#56d364','#ff7b72','#e3b341'];
+let chart = null;
+let data = null;
+let sysData = null;
+let firstLoad = true;
+
+async function fetchData() {
+  try {
+    const [expResp, sysResp] = await Promise.all([
+      fetch('/experiments.json?t=' + Date.now()),
+      fetch('/api/system?t=' + Date.now())
+    ]);
+    if (expResp.ok) data = await expResp.json();
+    if (sysResp.ok) sysData = await sysResp.json();
+    render();
+  } catch(e) { console.error('Fetch error:', e); }
+}
+
+function formatTime(seconds) {
+  if (seconds == null) return '-';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function barColor(pct) {
+  if (pct > 85) return 'red';
+  if (pct > 60) return 'yellow';
+  return 'green';
+}
+
+function renderSystem() {
+  const el = document.getElementById('system-bar');
+  if (!sysData) { el.innerHTML = ''; return; }
+  const gpuPct = sysData.gpu_util || 0;
+  const gpuMemPct = sysData.gpu_mem_total ? Math.round(sysData.gpu_mem_used / sysData.gpu_mem_total * 100) : 0;
+  const ramPct = sysData.ram_total_gb ? Math.round(sysData.ram_used_gb / sysData.ram_total_gb * 100) : 0;
+  const temp = sysData.gpu_temp;
+
+  el.innerHTML = `
+    <div class="sys-card">
+      <div class="label">GPU Usage</div>
+      <div class="bar-bg"><div class="bar-fill ${barColor(gpuPct)}" style="width:${gpuPct}%"></div></div>
+      <div class="stats-line"><span class="val">${gpuPct}%</span></div>
+    </div>
+    <div class="sys-card">
+      <div class="label">GPU Memory</div>
+      <div class="bar-bg"><div class="bar-fill ${barColor(gpuMemPct)}" style="width:${gpuMemPct}%"></div></div>
+      <div class="stats-line"><span class="val">${sysData.gpu_mem_used || '-'} / ${sysData.gpu_mem_total || '-'} MiB</span><span>${gpuMemPct}%</span></div>
+    </div>
+    <div class="sys-card">
+      <div class="label">RAM</div>
+      <div class="bar-bg"><div class="bar-fill ${barColor(ramPct)}" style="width:${ramPct}%"></div></div>
+      <div class="stats-line"><span class="val">${sysData.ram_used_gb || '-'} / ${sysData.ram_total_gb || '-'} GB</span><span>${ramPct}%</span></div>
+    </div>
+    <div class="sys-card">
+      <div class="label">GPU Temp</div>
+      <div class="bar-bg"><div class="bar-fill ${barColor(temp > 90 ? 90 : temp)}" style="width:${temp ? Math.min(temp, 100) : 0}%"></div></div>
+      <div class="stats-line"><span class="val">${temp != null ? temp + ' °C' : '-'}</span></div>
+    </div>
+  `;
+}
+
+function renderStats() {
+  const el = document.getElementById('stats');
+  const exps = data.experiments || [];
+  const total = exps.length;
+  const completed = exps.filter(e => e.status === 'completed').length;
+  const failed = exps.filter(e => e.status === 'failed').length;
+  const running = exps.filter(e => e.status === 'running').length;
+  const successes = exps.filter(e => e.success === true).length;
+
+  const completedExps = exps.filter(e => e.status === 'completed' && e.final_val_loss != null);
+  const bestLoss = completedExps.length > 0 ? Math.min(...completedExps.map(e => e.final_val_loss)) : null;
+
+  const baselineTime = data.baseline_time_seconds;
+  const fastestSuccess = exps.filter(e => e.success && e.total_time_seconds)
+    .sort((a,b) => a.total_time_seconds - b.total_time_seconds)[0];
+
+  el.innerHTML = `
+    <div class="stat-card"><div class="label">Total Attempts</div><div class="value accent">${total}</div></div>
+    <div class="stat-card"><div class="label">Running</div><div class="value yellow">${running}</div></div>
+    <div class="stat-card"><div class="label">Completed</div><div class="value">${completed}</div></div>
+    <div class="stat-card"><div class="label">Successes</div><div class="value green">${successes}</div></div>
+    <div class="stat-card"><div class="label">Failures</div><div class="value red">${failed}</div></div>
+    <div class="stat-card"><div class="label">Best Val Loss</div><div class="value ${bestLoss && bestLoss <= data.target_val_loss ? 'green' : ''}">${bestLoss != null ? bestLoss.toFixed(4) : '-'}</div></div>
+    <div class="stat-card"><div class="label">Baseline Time</div><div class="value">${formatTime(baselineTime)}</div></div>
+    <div class="stat-card"><div class="label">Best Speedup</div><div class="value ${fastestSuccess && baselineTime ? 'green' : ''}">${fastestSuccess && baselineTime ? ((1 - fastestSuccess.total_time_seconds / baselineTime) * 100).toFixed(1) + '%' : '-'}</div></div>
+  `;
+}
+
+function buildDatasets() {
+  const exps = data.experiments.filter(e => e.val_loss_history && e.val_loss_history.length > 0);
+  const datasets = exps.map((exp, i) => ({
+    label: exp.display_name || exp.name,
+    data: exp.val_loss_history.map(p => ({x: p.step, y: p.val_loss})),
+    borderColor: COLORS[i % COLORS.length],
+    backgroundColor: 'transparent',
+    borderWidth: 2,
+    pointRadius: 1,
+    tension: 0.3,
+  }));
+  if (exps.length > 0) {
+    const maxStep = Math.max(...exps.flatMap(e => e.val_loss_history.map(p => p.step)));
+    datasets.push({
+      label: 'Target (3.3821)',
+      data: [{x: 0, y: data.target_val_loss}, {x: maxStep, y: data.target_val_loss}],
+      borderColor: '#f85149',
+      borderDash: [6, 4],
+      borderWidth: 1.5,
+      pointRadius: 0,
+    });
+  }
+  return datasets;
+}
+
+function renderChart() {
+  const canvas = document.getElementById('lossChart');
+  const datasets = buildDatasets();
+
+  if (chart) {
+    // Update data in-place without animation on refresh
+    chart.data.datasets = datasets;
+    chart.update('none');
+  } else {
+    // First load: create chart with animation
+    chart = new Chart(canvas, {
+      type: 'scatter',
+      data: { datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        resizeDelay: 0,
+        animation: { duration: 800 },
+        scales: {
+          x: { title: { display: true, text: 'Step', color: '#8b949e' }, grid: { color: '#21262d' }, ticks: { color: '#8b949e' } },
+          y: { title: { display: true, text: 'Val Loss', color: '#8b949e' }, grid: { color: '#21262d' }, ticks: { color: '#8b949e' }, min: 3.0 }
+        },
+        plugins: {
+          legend: { labels: { color: '#e6edf3', usePointStyle: true, pointStyle: 'line' } },
+        },
+        showLine: true,
+      }
+    });
+  }
+}
+
+function renderExperiments() {
+  const el = document.getElementById('experiments');
+  const noData = document.getElementById('no-data');
+  const exps = data.experiments || [];
+
+  if (exps.length === 0) {
+    el.innerHTML = '';
+    noData.style.display = 'block';
+    return;
+  }
+  noData.style.display = 'none';
+
+  el.innerHTML = exps.map((exp, i) => {
+    const baselineTime = data.baseline_time_seconds;
+    let speedupHtml = '';
+    if (exp.total_time_seconds && baselineTime && exp.name !== 'exp0_baseline') {
+      const pct = ((1 - exp.total_time_seconds / baselineTime) * 100);
+      speedupHtml = `<div class="metric"><span class="mlabel">Speedup</span><span class="mvalue ${pct > 0 ? 'speedup-positive' : 'speedup-negative'}">${pct > 0 ? '+' : ''}${pct.toFixed(1)}%</span></div>`;
+    }
+
+    // Step progress
+    const totalSteps = exp.total_steps || 4768;
+    let lastStep = exp.last_step || 0;
+    if (!lastStep && exp.train_loss_history && exp.train_loss_history.length > 0) {
+      lastStep = exp.train_loss_history[exp.train_loss_history.length - 1].step;
+    }
+    const stepPct = Math.min(100, (lastStep / totalSteps) * 100);
+
+    let progressHtml = '';
+    let progressText = '';
+    if (exp.status === 'running') {
+      progressHtml = `<div class="progress-bar"><div class="fill" style="width:${stepPct}%"></div></div>`;
+      const eta = exp.total_time_seconds && lastStep > 0 ? (exp.total_time_seconds / lastStep) * (totalSteps - lastStep) : null;
+      progressText = `<div class="progress-text">${lastStep}/${totalSteps} steps (${stepPct.toFixed(1)}%)${eta ? ' &middot; ETA: ' + formatTime(eta) : ''}</div>`;
+    }
+
+    // GPU mem display
+    const gpuMemStr = exp.peak_memory_mib ? exp.peak_memory_mib + ' MiB' :
+      (sysData && sysData.gpu_mem_used && exp.status === 'running' ? sysData.gpu_mem_used + ' MiB (live)' : '-');
+
+    // Build val loss table for details
+    let valTableHtml = '';
+    if (exp.val_loss_history && exp.val_loss_history.length > 0) {
+      const rows = exp.val_loss_history.map(p =>
+        `<tr><td>${p.step}</td><td>${p.val_loss.toFixed(4)}</td><td>${p.val_loss <= data.target_val_loss ? '<span style="color:var(--green)">&#10003;</span>' : ''}</td></tr>`
+      ).join('');
+      valTableHtml = `<table class="val-table"><tr><th>Step</th><th>Val Loss</th><th></th></tr>${rows}</table>`;
+    }
+
+    // Avg step time
+    let avgStepTime = '-';
+    if (exp.total_time_seconds && lastStep > 0) {
+      avgStepTime = (exp.total_time_seconds / lastStep * 1000).toFixed(0) + ' ms';
+    }
+
+    return `
+      <div class="exp-card">
+        <div class="top">
+          <span class="name">#${i} ${exp.display_name || exp.name}</span>
+          <span class="badge ${exp.status}">${exp.status}</span>
+        </div>
+        ${exp.description ? `<div class="hypothesis">${exp.description}</div>` : ''}
+        <div class="metrics">
+          <div class="metric"><span class="mlabel">Steps</span><span class="mvalue">${lastStep}/${totalSteps}</span></div>
+          <div class="metric"><span class="mlabel">Val Loss</span><span class="mvalue" style="color:${exp.final_val_loss && exp.final_val_loss <= data.target_val_loss ? 'var(--green)' : 'var(--text)'}">${exp.final_val_loss != null ? exp.final_val_loss.toFixed(4) : '-'}</span></div>
+          <div class="metric"><span class="mlabel">Time</span><span class="mvalue">${formatTime(exp.total_time_seconds)}</span></div>
+          <div class="metric"><span class="mlabel">GPU Mem</span><span class="mvalue">${gpuMemStr}</span></div>
+          <div class="metric"><span class="mlabel">Avg Step</span><span class="mvalue">${avgStepTime}</span></div>
+          ${speedupHtml}
+        </div>
+        ${progressHtml}
+        ${progressText}
+        ${exp.key_findings ? `<div class="findings">${exp.key_findings}</div>` : ''}
+        <div class="details-toggle" onclick="this.nextElementSibling.classList.toggle('open'); this.textContent = this.nextElementSibling.classList.contains('open') ? '▾ Hide details' : '▸ Show details'">▸ Show details</div>
+        <div class="details">
+          <div class="detail-section">
+            <div class="detail-label">Hypothesis</div>
+            <div class="detail-content">${exp.description || 'N/A'}</div>
+          </div>
+          ${exp.key_findings ? `<div class="detail-section"><div class="detail-label">Analysis / Findings</div><div class="detail-content">${exp.key_findings}</div></div>` : ''}
+          <div class="detail-section">
+            <div class="detail-label">Timing</div>
+            <div class="detail-content">Total: ${formatTime(exp.total_time_seconds)} | Avg step: ${avgStepTime} | Steps: ${lastStep}/${totalSteps}${exp.start_time ? ' | Started: ' + new Date(exp.start_time).toLocaleString() : ''}${exp.end_time ? ' | Ended: ' + new Date(exp.end_time).toLocaleString() : ''}</div>
+          </div>
+          <div class="detail-section">
+            <div class="detail-label">Validation Loss History</div>
+            ${valTableHtml || '<div class="detail-content">No data yet</div>'}
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function render() {
+  if (!data) return;
+  renderSystem();
+  renderStats();
+  renderChart();
+  renderExperiments();
+  document.getElementById('last-update').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+}
+
+fetchData();
+setInterval(fetchData, 10000);
+</script>
+</body>
+</html>

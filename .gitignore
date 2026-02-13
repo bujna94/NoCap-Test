@@ -2,3 +2,20 @@ data/fineweb10B/
 pylog124M/
 logs/
 wandb/
+
+# Experiment outputs (logs, checkpoints, models)
+experiments/*/output.log
+experiments/*/*.pt
+experiments/*/*.bin
+experiments/*/model_*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# System
+.DS_Store
+*.swp
+*~
+*.tmp

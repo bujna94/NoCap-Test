@@ -1,0 +1,34 @@
+{
+  "target_val_loss": 3.3821,
+  "baseline_time_seconds": null,
+  "experiments": [
+    {
+      "name": "exp0_baseline",
+      "display_name": "Baseline (RTX 3080 Laptop)",
+      "description": "Unmodified baseline to establish reference time on our hardware",
+      "status": "failed",
+      "start_time": "2026-02-13T17:50:26.789698",
+      "end_time": "2026-02-13T18:02:39.615964",
+      "total_time_seconds": 605.53,
+      "total_steps": 4768,
+      "peak_memory_mib": null,
+      "final_val_loss": 10.965009,
+      "success": false,
+      "val_loss_history": [
+        {
+          "step": 0,
+          "val_loss": 10.965009
+        }
+      ],
+      "train_loss_history": [
+        {
+          "step": 0,
+          "loss": 10.95613
+        }
+      ],
+      "log_file": "experiments/exp0_baseline/output.log",
+      "key_findings": "",
+      "last_step": 12
+    }
+  ]
+}
