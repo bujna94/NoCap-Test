@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Serves the experiment dashboard on localhost:8080 (threaded to avoid hangs)."""
+import base64
 import http.server
 import json
 import os
@@ -8,6 +9,8 @@ import socketserver
 
 PORT = 8080
 SERVE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # project root
+DASHBOARD_USER = os.environ.get("DASHBOARD_USER", "admin")
+DASHBOARD_PASS = os.environ.get("DASHBOARD_PASS", "nocap2026")
 
 
 def get_system_stats():
@@ -40,11 +43,32 @@ def get_system_stats():
     return stats
 
 
+def check_auth(handler):
+    """Check HTTP Basic Auth. Returns True if authorized."""
+    auth_header = handler.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Basic "):
+        try:
+            decoded = base64.b64decode(auth_header[6:]).decode("utf-8")
+            user, passwd = decoded.split(":", 1)
+            if user == DASHBOARD_USER and passwd == DASHBOARD_PASS:
+                return True
+        except Exception:
+            pass
+    handler.send_response(401)
+    handler.send_header("WWW-Authenticate", 'Basic realm="Dashboard"')
+    handler.send_header("Content-Type", "text/html")
+    handler.end_headers()
+    handler.wfile.write(b"Unauthorized")
+    return False
+
+
 class DashboardHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=SERVE_DIR, **kwargs)
 
     def do_GET(self):
+        if not check_auth(self):
+            return
         if self.path.startswith("/api/system"):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -67,6 +91,7 @@ class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
 
 if __name__ == "__main__":
+    print(f"Auth: user={DASHBOARD_USER} (set DASHBOARD_USER/DASHBOARD_PASS env to change)")
     with ThreadedHTTPServer(("", PORT), DashboardHandler) as httpd:
         print(f"Dashboard: http://localhost:{PORT}/dashboard/index.html")
         print(f"Serving from: {SERVE_DIR}")
