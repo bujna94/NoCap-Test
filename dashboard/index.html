@@ -337,12 +337,19 @@ function renderExperiments() {
         <div class="details">
           <div class="detail-section">
             <div class="detail-label">Hypothesis</div>
-            <div class="detail-content">${exp.description || 'N/A'}</div>
+            <div class="detail-content">${exp.claude_metadata?.hypothesis || exp.description || 'N/A'}</div>
           </div>
+          ${exp.claude_metadata?.expected_impact ? `<div class="detail-section"><div class="detail-label">Expected Impact</div><div class="detail-content">${exp.claude_metadata.expected_impact}</div></div>` : ''}
+          ${exp.claude_metadata?.risk_assessment ? `<div class="detail-section"><div class="detail-label">Risk Assessment</div><div class="detail-content">${exp.claude_metadata.risk_assessment}</div></div>` : ''}
           ${exp.key_findings ? `<div class="detail-section"><div class="detail-label">Analysis / Findings</div><div class="detail-content">${exp.key_findings}</div></div>` : ''}
           <div class="detail-section">
             <div class="detail-label">Timing</div>
             <div class="detail-content">Total: ${formatTime(exp.total_time_seconds)} | Avg step: ${avgStepTime} | Steps: ${lastStep}/${totalSteps}${exp.start_time ? ' | Started: ' + new Date(exp.start_time).toLocaleString() : ''}${exp.end_time ? ' | Ended: ' + new Date(exp.end_time).toLocaleString() : ''}</div>
+          </div>
+          ${exp.claude_metadata?.run_args ? `<div class="detail-section"><div class="detail-label">Run Command</div><div class="detail-content" style="font-family:monospace;font-size:0.85em;background:var(--bg);padding:8px;border-radius:4px;">torchrun --standalone --nproc_per_node=1 train_gpt2.py ${exp.claude_metadata.run_args}</div></div>` : ''}
+          <div class="detail-section">
+            <div class="detail-label">Script Location</div>
+            <div class="detail-content" style="font-family:monospace;">experiments/${exp.name}/train_gpt2.py</div>
           </div>
           <div class="detail-section">
             <div class="detail-label">Validation Loss History</div>

@@ -418,6 +418,14 @@ def main():
         print(f"[orchestrator] Hypothesis: {exp_data.get('hypothesis', 'N/A')}")
         print(f"[orchestrator] Experiment: {exp_data.get('display_name', exp_data['experiment_name'])}")
 
+        # Store full Claude response metadata for replication
+        exp_metadata = {
+            "hypothesis": exp_data.get("hypothesis", ""),
+            "expected_impact": exp_data.get("expected_impact", ""),
+            "risk_assessment": exp_data.get("risk_assessment", ""),
+            "run_args": exp_data.get("run_args", ""),
+        }
+
         # Setup experiment files
         exp_name, exp_dir, run_sh = setup_experiment(exp_data, exp_num)
 
@@ -480,6 +488,7 @@ Please provide the COMPLETE fixed training script. Respond with ONLY the Python 
                 "train_loss_history": [],
                 "log_file": "",
                 "key_findings": f"Failed smoke test: {smoke_error[:500]}",
+                "claude_metadata": exp_metadata,
             })
             save_experiments(data)
             exp_num += 1
@@ -488,6 +497,14 @@ Please provide the COMPLETE fixed training script. Respond with ONLY the Python 
         # Run full training
         description = exp_data.get("description", exp_data.get("hypothesis", ""))
         returncode = run_full_training(exp_name, run_sh, description)
+
+        # Store Claude metadata for replication
+        data = load_experiments()
+        for exp in data["experiments"]:
+            if exp["name"] == exp_name:
+                exp["claude_metadata"] = exp_metadata
+                break
+        save_experiments(data)
 
         # Analyze results
         try:
