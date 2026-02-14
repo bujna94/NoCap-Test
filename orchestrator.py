@@ -27,6 +27,21 @@ EXPERIMENTS_DIR = PROJECT_ROOT / "experiments"
 TARGET_VAL_LOSS = 3.3821
 CLAUDE_MODEL = "claude-opus-4-6"  # most capable for novel research ideas
 
+# Fixed baseline run args - Claude should NOT change these
+BASELINE_RUN_ARGS = (
+    "--model d12 "
+    "--batch_size 16 "
+    "--grad_accumulation_steps 32 "
+    "--sequence_length 1024 "
+    "--val_loss_every 128 "
+    "--val_batch_size 16 "
+    "--num_iterations 4768 "
+    "--weight_decay 0.1 "
+    "--learning_rate 0.0018 "
+    "--warmup_iters 256 "
+    "--warmdown_iters 1024"
+)
+
 
 def load_experiments():
     if EXPERIMENTS_JSON.exists():
@@ -105,12 +120,23 @@ def call_claude_for_experiment(client, exp_num):
 
 ## Goal
 Reach validation loss ≤ {TARGET_VAL_LOSS} on FineWeb faster than the baseline.
+"Faster" means reaching the SAME val loss in FEWER steps or LESS wall-clock time.
 
 ## Rules (from the competition)
 - Focus on NOVEL algorithmic ideas that could scale
 - Do NOT: just tune hyperparameters, copy known techniques (SwiGLU from LLaMA, MTP from Meta paper, etc.)
 - ALLOWED: modify loss function, architecture, training algorithm, data handling, new ideas
 - The ideas should be your OWN creative hypotheses, not standard recipes
+
+## CRITICAL: Fixed Training Configuration
+The following run args are FIXED and MUST NOT be changed:
+  {BASELINE_RUN_ARGS}
+
+This means: batch_size=16, grad_accumulation_steps=32, sequence_length=1024,
+num_iterations=4768, learning_rate=0.0018, etc.
+Total tokens per step: 16 * 32 * 1024 = 524,288
+You may ONLY modify the training SCRIPT (model architecture, loss function, optimizer logic, etc.)
+Do NOT add new command-line arguments. Any new parameters should be hardcoded in the script.
 
 ## Hardware
 - RTX 4090, 24GB VRAM
@@ -138,17 +164,18 @@ Respond with EXACTLY this JSON structure (no markdown, no code fences, just raw 
     "experiment_name": "short_snake_case_name",
     "display_name": "Human Readable Name",
     "training_script": "... complete Python training script ...",
-    "run_args": "... the torchrun command arguments (everything after train_gpt2.py) ...",
     "expected_impact": "What you expect to happen and why",
     "risk_assessment": "What could go wrong"
 }}
 
 IMPORTANT:
 - The training_script must be COMPLETE and RUNNABLE (not a diff or partial)
-- The run_args should include all necessary flags
+- Do NOT include "run_args" - they are fixed and provided by the harness
+- Do NOT add new argparse arguments - hardcode any new parameters in the script
 - Be creative - try something that hasn't been tried before
 - If previous experiments failed, learn from those failures
 - Keep the same data loading format (binary shards with the existing header format)
+- The script must work with the EXACT same command-line args as the baseline
 """
 
     print(f"[orchestrator] Calling Claude API to design experiment #{exp_num}...")
@@ -194,7 +221,7 @@ IMPORTANT:
         print(f"[orchestrator] Raw response (first 500 chars): {text[:500]}")
         raise ValueError("Could not extract JSON from Claude response")
 
-    required_keys = ["hypothesis", "description", "experiment_name", "training_script", "run_args"]
+    required_keys = ["hypothesis", "description", "experiment_name", "training_script"]
     for key in required_keys:
         if key not in result:
             raise ValueError(f"Claude response missing required key: {key}")
@@ -213,8 +240,7 @@ def setup_experiment(exp_data, exp_num):
     with open(script_path, "w") as f:
         f.write(exp_data["training_script"])
 
-    # Write run script
-    run_args = exp_data["run_args"]
+    # Write run script - ALWAYS use baseline run args
     run_sh = exp_dir / "run.sh"
     with open(run_sh, "w") as f:
         f.write(f"""#!/bin/bash
@@ -223,7 +249,7 @@ torchrun --standalone --nproc_per_node=1 {exp_dir.relative_to(PROJECT_ROOT)}/tra
   --input_bin "data/fineweb10B/fineweb_train_*.bin" \\
   --input_val_bin "data/fineweb10B/fineweb_val_*.bin" \\
   --output_dir {exp_dir.relative_to(PROJECT_ROOT)} \\
-  {run_args}
+  {BASELINE_RUN_ARGS}
 """)
     run_sh.chmod(0o755)
 
@@ -445,7 +471,7 @@ def main():
             "hypothesis": exp_data.get("hypothesis", ""),
             "expected_impact": exp_data.get("expected_impact", ""),
             "risk_assessment": exp_data.get("risk_assessment", ""),
-            "run_args": exp_data.get("run_args", ""),
+            "run_args": BASELINE_RUN_ARGS,
         }
 
         # Setup experiment files
