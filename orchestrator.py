@@ -160,17 +160,39 @@ IMPORTANT:
 
     text = response.content[0].text.strip()
 
-    # Try to parse JSON - handle potential markdown fencing
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\n?", "", text)
-        text = re.sub(r"\n?```$", "", text)
+    # Try to parse JSON - handle markdown fencing and surrounding text
+    result = None
 
+    # Method 1: direct parse
     try:
         result = json.loads(text)
-    except json.JSONDecodeError as e:
-        print(f"[orchestrator] Failed to parse Claude response as JSON: {e}")
+    except json.JSONDecodeError:
+        pass
+
+    # Method 2: strip markdown fences
+    if result is None:
+        cleaned = re.sub(r"^```(?:json)?\n?", "", text)
+        cleaned = re.sub(r"\n?```$", "", cleaned)
+        try:
+            result = json.loads(cleaned)
+        except json.JSONDecodeError:
+            pass
+
+    # Method 3: find JSON object in the text (between first { and last })
+    if result is None:
+        first_brace = text.find("{")
+        last_brace = text.rfind("}")
+        if first_brace != -1 and last_brace > first_brace:
+            json_str = text[first_brace:last_brace + 1]
+            try:
+                result = json.loads(json_str)
+            except json.JSONDecodeError:
+                pass
+
+    if result is None:
+        print(f"[orchestrator] Failed to parse Claude response as JSON")
         print(f"[orchestrator] Raw response (first 500 chars): {text[:500]}")
-        raise
+        raise ValueError("Could not extract JSON from Claude response")
 
     required_keys = ["hypothesis", "description", "experiment_name", "training_script", "run_args"]
     for key in required_keys:
