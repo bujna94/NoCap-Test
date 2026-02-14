@@ -115,6 +115,7 @@ let chart = null;
 let data = null;
 let sysData = null;
 let firstLoad = true;
+const openDetails = new Set();  // track which experiment details are open
 
 async function fetchData() {
   try {
@@ -333,8 +334,8 @@ function renderExperiments() {
         ${progressHtml}
         ${progressText}
         ${exp.key_findings ? `<div class="findings">${exp.key_findings}</div>` : ''}
-        <div class="details-toggle" onclick="this.nextElementSibling.classList.toggle('open'); this.textContent = this.nextElementSibling.classList.contains('open') ? '▾ Hide details' : '▸ Show details'">▸ Show details</div>
-        <div class="details">
+        <div class="details-toggle" onclick="toggleDetails('${exp.name}', this);">${openDetails.has(exp.name) ? '▾ Hide details' : '▸ Show details'}</div>
+        <div class="details${openDetails.has(exp.name) ? ' open' : ''}"
           <div class="detail-section">
             <div class="detail-label">Hypothesis</div>
             <div class="detail-content">${exp.claude_metadata?.hypothesis || exp.description || 'N/A'}</div>
@@ -359,6 +360,18 @@ function renderExperiments() {
       </div>
     `;
   }).join('');
+}
+
+function toggleDetails(name, el) {
+  if (openDetails.has(name)) {
+    openDetails.delete(name);
+    el.textContent = '▸ Show details';
+    el.nextElementSibling.classList.remove('open');
+  } else {
+    openDetails.add(name);
+    el.textContent = '▾ Hide details';
+    el.nextElementSibling.classList.add('open');
+  }
 }
 
 function render() {
