@@ -335,7 +335,7 @@ function renderExperiments() {
         ${progressText}
         ${exp.key_findings ? `<div class="findings">${exp.key_findings}</div>` : ''}
         <div class="details-toggle" onclick="toggleDetails('${exp.name}', this);">${openDetails.has(exp.name) ? '▾ Hide details' : '▸ Show details'}</div>
-        <div class="details${openDetails.has(exp.name) ? ' open' : ''}"
+        <div class="details${openDetails.has(exp.name) ? ' open' : ''}">
           <div class="detail-section">
             <div class="detail-label">Hypothesis</div>
             <div class="detail-content">${exp.claude_metadata?.hypothesis || exp.description || 'N/A'}</div>
