@@ -25,7 +25,7 @@ PROJECT_ROOT = Path(__file__).parent.resolve()
 EXPERIMENTS_JSON = PROJECT_ROOT / "experiments.json"
 EXPERIMENTS_DIR = PROJECT_ROOT / "experiments"
 TARGET_VAL_LOSS = 3.3821
-CLAUDE_MODEL = "claude-sonnet-4-5-20250929"  # fast + capable for code generation
+CLAUDE_MODEL = "claude-opus-4-6"  # most capable for novel research ideas
 
 
 def load_experiments():
