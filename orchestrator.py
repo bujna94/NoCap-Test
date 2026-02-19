@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
 Autonomous experiment orchestrator.
-Runs an infinite loop: train → analyze with Claude API → generate next experiment → repeat.
+Runs an infinite loop: train → analyze with LLM → generate next experiment → repeat.
+
+Supports two LLM backends:
+  1. Claude API (default): export ANTHROPIC_API_KEY=sk-ant-...
+  2. Ollama (local):       python orchestrator.py --llm-provider ollama --ollama-model qwen3:32b
 
 Usage:
-    export ANTHROPIC_API_KEY=sk-ant-...
-    python orchestrator.py [--skip-baseline]
+    python orchestrator.py [--skip-baseline] [--llm-provider claude|ollama]
 """
 import argparse
 import json
@@ -19,13 +22,151 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-import anthropic
+import requests as _requests_lib
 
 PROJECT_ROOT = Path(__file__).parent.resolve()
 EXPERIMENTS_JSON = PROJECT_ROOT / "experiments.json"
 EXPERIMENTS_DIR = PROJECT_ROOT / "experiments"
 TARGET_VAL_LOSS = 3.3821
 CLAUDE_MODEL = "claude-opus-4-6"  # most capable for novel research ideas
+
+
+# ---------------------------------------------------------------------------
+# LLM provider abstraction
+# ---------------------------------------------------------------------------
+
+class LLMProvider:
+    """Unified interface for LLM providers."""
+    def chat(self, prompt: str, max_tokens: int = 16000) -> str:
+        raise NotImplementedError
+
+    def start(self):
+        """Start the backend if needed (no-op for remote APIs)."""
+        pass
+
+    def stop(self):
+        """Stop the backend to free resources (no-op for remote APIs)."""
+        pass
+
+
+class ClaudeProvider(LLMProvider):
+    def __init__(self, api_key: str, model: str = CLAUDE_MODEL):
+        import anthropic
+        self.client = anthropic.Anthropic(api_key=api_key)
+        self.model = model
+
+    def chat(self, prompt: str, max_tokens: int = 16000) -> str:
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.content[0].text.strip()
+
+
+class OllamaProvider(LLMProvider):
+    def __init__(self, model: str = "qwen3:32b", base_url: str = "http://localhost:11434"):
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+        self._proc = None
+        # Just check the model name is sane; don't require server to be up at init time
+        print(f"[ollama] Provider configured: model={model} url={base_url}")
+        print(f"[ollama] Server will be started before each LLM call and stopped before GPU work.")
+
+    def start(self):
+        """Start ollama serve if not already running."""
+        # Check if already up (e.g. user started it manually)
+        try:
+            _requests_lib.get(f"{self.base_url}/api/tags", timeout=2).raise_for_status()
+            print("[ollama] Server already running.")
+            return
+        except Exception:
+            pass
+
+        print("[ollama] Starting server...")
+        self._proc = subprocess.Popen(
+            ["ollama", "serve"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        # Wait until the API responds (up to 30s)
+        for _ in range(30):
+            time.sleep(1)
+            try:
+                _requests_lib.get(f"{self.base_url}/api/tags", timeout=2).raise_for_status()
+                print("[ollama] Server ready.")
+                return
+            except Exception:
+                pass
+        print("[ollama] WARNING: Server may not be ready yet, proceeding anyway.")
+
+    def stop(self):
+        """Stop ollama serve to free GPU VRAM for training."""
+        if self._proc and self._proc.poll() is None:
+            print("[ollama] Stopping server to free GPU VRAM...")
+            self._proc.terminate()
+            try:
+                self._proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+            self._proc = None
+            print("[ollama] Server stopped.")
+        else:
+            # May have been started externally; kill by name to be safe
+            result = subprocess.run(
+                ["pkill", "-f", "ollama serve"],
+                capture_output=True,
+            )
+            if result.returncode == 0:
+                print("[ollama] Stopped external ollama serve process.")
+
+    def chat(self, prompt: str, max_tokens: int = 16000) -> str:
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+            "options": {
+                "num_predict": max_tokens,
+                "temperature": 0.7,
+            },
+        }
+        r = _requests_lib.post(
+            f"{self.base_url}/api/chat",
+            json=payload,
+            timeout=600,  # large models can be slow
+        )
+        r.raise_for_status()
+        return r.json()["message"]["content"].strip()
+
+
+def create_llm_provider(args) -> LLMProvider:
+    """Factory: create the right LLM provider from CLI args."""
+    provider = args.llm_provider
+
+    if provider == "auto":
+        # Auto-detect: prefer Claude if key is set, else try Ollama
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            provider = "claude"
+        else:
+            provider = "ollama"
+            print("[orchestrator] No ANTHROPIC_API_KEY found, falling back to Ollama")
+
+    if provider == "claude":
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            print("ERROR: Set ANTHROPIC_API_KEY environment variable (or use --llm-provider ollama)")
+            sys.exit(1)
+        return ClaudeProvider(api_key=api_key)
+
+    elif provider == "ollama":
+        return OllamaProvider(
+            model=args.ollama_model,
+            base_url=args.ollama_url,
+        )
+
+    else:
+        print(f"ERROR: Unknown LLM provider: {provider}")
+        sys.exit(1)
 
 # Fixed baseline run args - Claude should NOT change these
 BASELINE_RUN_ARGS = (
@@ -71,17 +212,35 @@ def get_experiment_summary():
     lines.append(f"Baseline time: {data.get('baseline_time_seconds', 'unknown')}s")
     lines.append("")
 
+    baseline_time = data.get("baseline_time_seconds")
     for exp in data["experiments"]:
         status = exp["status"]
         name = exp["display_name"] or exp["name"]
         val = exp.get("final_val_loss", "N/A")
         time_s = exp.get("total_time_seconds", "N/A")
         success = exp.get("success", False)
+        partial = exp.get("partial_success", False)
         findings = exp.get("key_findings", "")
         desc = exp.get("description", "")
 
+        val_ok = val != "N/A" and val is not None and val <= TARGET_VAL_LOSS
+        time_ok = (time_s != "N/A" and time_s is not None and baseline_time is not None
+                   and time_s < baseline_time)
+
+        if success:
+            outcome = "FULL SUCCESS (val loss + faster than baseline)"
+        elif partial:
+            parts = []
+            if val_ok:
+                parts.append("val loss OK")
+            if time_ok:
+                parts.append("faster than baseline")
+            outcome = f"PARTIAL ({', '.join(parts)} — but not both)"
+        else:
+            outcome = "not achieved"
+
         lines.append(f"## {name}")
-        lines.append(f"  Status: {status} | Val Loss: {val} | Time: {time_s}s | Success: {success}")
+        lines.append(f"  Status: {status} | Val Loss: {val} | Time: {time_s}s | Outcome: {outcome}")
         lines.append(f"  Hypothesis: {desc}")
         if findings:
             lines.append(f"  Findings: {findings}")
@@ -111,8 +270,8 @@ def get_next_exp_number():
     return n
 
 
-def call_claude_for_experiment(client, exp_num):
-    """Ask Claude to analyze results and propose the next experiment."""
+def call_claude_for_experiment(llm, exp_num):
+    """Ask the LLM to analyze results and propose the next experiment."""
     baseline_script = get_baseline_script()
     summary = get_experiment_summary()
 
@@ -178,14 +337,9 @@ IMPORTANT:
 - The script must work with the EXACT same command-line args as the baseline
 """
 
-    print(f"[orchestrator] Calling Claude API to design experiment #{exp_num}...")
-    response = client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=16000,
-        messages=[{"role": "user", "content": prompt}],
-    )
-
-    text = response.content[0].text.strip()
+    provider_name = type(llm).__name__.replace("Provider", "")
+    print(f"[orchestrator] Calling {provider_name} to design experiment #{exp_num}...")
+    text = llm.chat(prompt, max_tokens=16000)
 
     # Try to parse JSON - handle markdown fencing and surrounding text
     result = None
@@ -217,14 +371,14 @@ IMPORTANT:
                 pass
 
     if result is None:
-        print(f"[orchestrator] Failed to parse Claude response as JSON")
+        print(f"[orchestrator] Failed to parse LLM response as JSON")
         print(f"[orchestrator] Raw response (first 500 chars): {text[:500]}")
-        raise ValueError("Could not extract JSON from Claude response")
+        raise ValueError("Could not extract JSON from LLM response")
 
     required_keys = ["hypothesis", "description", "experiment_name", "training_script"]
     for key in required_keys:
         if key not in result:
-            raise ValueError(f"Claude response missing required key: {key}")
+            raise ValueError(f"LLM response missing required key: {key}")
 
     return result
 
@@ -322,22 +476,18 @@ def record_findings(exp_name, findings):
     save_experiments(data)
 
 
-def analyze_results(client, exp_name):
-    """Ask Claude to analyze the results of the latest experiment."""
+def analyze_results(llm, exp_name):
+    """Ask the LLM to analyze the results of the latest experiment."""
     summary = get_experiment_summary()
 
-    response = client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=1000,
-        messages=[{"role": "user", "content": f"""Analyze the results of experiment "{exp_name}" and provide a brief (2-3 sentence) summary of what happened and what we learned. Be specific about numbers.
+    prompt = f"""Analyze the results of experiment "{exp_name}" and provide a brief (2-3 sentence) summary of what happened and what we learned. Be specific about numbers.
 
 ## All Experiments
 {summary}
 
-Respond with just the analysis text, no JSON or formatting."""}],
-    )
+Respond with just the analysis text, no JSON or formatting."""
 
-    return response.content[0].text.strip()
+    return llm.chat(prompt, max_tokens=1000)
 
 
 def run_baseline(skip=False):
@@ -400,19 +550,21 @@ torchrun --standalone --nproc_per_node=1 train_gpt2.py \\
 def main():
     parser = argparse.ArgumentParser(description="Autonomous experiment orchestrator")
     parser.add_argument("--skip-baseline", action="store_true", help="Skip baseline if already run")
-    parser.add_argument("--max-retries", type=int, default=3, help="Max retries for failed Claude API calls or smoke tests")
+    parser.add_argument("--max-retries", type=int, default=3, help="Max retries for failed API calls or smoke tests")
+    parser.add_argument("--llm-provider", choices=["claude", "ollama", "auto"], default="auto",
+                        help="LLM backend: 'claude' (needs ANTHROPIC_API_KEY), 'ollama' (local), or 'auto' (default)")
+    parser.add_argument("--ollama-model", default="qwen3:32b", help="Ollama model name (default: qwen3:32b)")
+    parser.add_argument("--ollama-url", default="http://localhost:11434", help="Ollama API base URL")
     args = parser.parse_args()
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        print("ERROR: Set ANTHROPIC_API_KEY environment variable")
-        sys.exit(1)
+    llm = create_llm_provider(args)
 
-    client = anthropic.Anthropic(api_key=api_key)
-
+    provider_label = type(llm).__name__.replace("Provider", "")
+    model_label = getattr(llm, "model", CLAUDE_MODEL)
     print("=" * 60)
     print("  GPT-2 Training Speedup - Autonomous Orchestrator")
     print("=" * 60)
+    print(f"  LLM:    {provider_label} ({model_label})")
     print(f"  Target: val_loss ≤ {TARGET_VAL_LOSS}")
     print(f"  Dashboard: http://localhost:8080/dashboard/index.html")
     print("=" * 60)
@@ -449,19 +601,22 @@ def main():
         print(f"  EXPERIMENT LOOP - Iteration #{exp_num}")
         print(f"{'=' * 60}")
 
-        # Ask Claude to design the next experiment
+        # Ask LLM to design the next experiment (start server, call, then stop before GPU work)
+        llm.start()
         for attempt in range(args.max_retries):
             try:
-                exp_data = call_claude_for_experiment(client, exp_num)
+                exp_data = call_claude_for_experiment(llm, exp_num)
                 break
             except Exception as e:
-                print(f"[orchestrator] Claude API error (attempt {attempt+1}/{args.max_retries}): {e}")
+                print(f"[orchestrator] LLM error (attempt {attempt+1}/{args.max_retries}): {e}")
                 if attempt < args.max_retries - 1:
                     time.sleep(10)
                 else:
+                    llm.stop()
                     print("[orchestrator] Skipping this iteration due to API errors")
                     exp_num += 1
                     continue
+        llm.stop()
 
         print(f"[orchestrator] Hypothesis: {exp_data.get('hypothesis', 'N/A')}")
         print(f"[orchestrator] Experiment: {exp_data.get('display_name', exp_data['experiment_name'])}")
@@ -487,13 +642,10 @@ def main():
                 break
             smoke_error = error
             if attempt < args.max_retries - 1:
-                print(f"[orchestrator] Smoke test failed, asking Claude to fix (attempt {attempt+1})...")
-                # Ask Claude to fix the script
+                print(f"[orchestrator] Smoke test failed, asking LLM to fix (attempt {attempt+1})...")
+                # Ask LLM to fix the script (start server, get fix, stop before next smoke test)
                 try:
-                    fix_response = client.messages.create(
-                        model=CLAUDE_MODEL,
-                        max_tokens=16000,
-                        messages=[{"role": "user", "content": f"""The training script for experiment "{exp_data['experiment_name']}" failed the smoke test with this error:
+                    fix_prompt = f"""The training script for experiment "{exp_data['experiment_name']}" failed the smoke test with this error:
 
 ```
 {smoke_error}
@@ -504,9 +656,10 @@ Here is the current script:
 {exp_data['training_script']}
 ```
 
-Please provide the COMPLETE fixed training script. Respond with ONLY the Python code, no markdown fences or explanation."""}],
-                    )
-                    fixed_script = fix_response.content[0].text.strip()
+Please provide the COMPLETE fixed training script. Respond with ONLY the Python code, no markdown fences or explanation."""
+                    llm.start()
+                    fixed_script = llm.chat(fix_prompt, max_tokens=16000)
+                    llm.stop()
                     if fixed_script.startswith("```"):
                         fixed_script = re.sub(r"^```(?:python)?\n?", "", fixed_script)
                         fixed_script = re.sub(r"\n?```$", "", fixed_script)
@@ -514,7 +667,8 @@ Please provide the COMPLETE fixed training script. Respond with ONLY the Python 
                     with open(exp_dir / "train_gpt2.py", "w") as f:
                         f.write(fixed_script)
                 except Exception as e:
-                    print(f"[orchestrator] Failed to get fix from Claude: {e}")
+                    llm.stop()
+                    print(f"[orchestrator] Failed to get fix from LLM: {e}")
 
         if not smoke_passed:
             print(f"[orchestrator] Smoke test failed after {args.max_retries} attempts, skipping experiment")
@@ -554,27 +708,37 @@ Please provide the COMPLETE fixed training script. Respond with ONLY the Python 
                 break
         save_experiments(data)
 
-        # Analyze results
+        # Analyze results (training is done, GPU is free — start LLM, analyze, stop)
         try:
-            findings = analyze_results(client, exp_name)
+            llm.start()
+            findings = analyze_results(llm, exp_name)
+            llm.stop()
             record_findings(exp_name, findings)
             print(f"[orchestrator] Analysis: {findings}")
         except Exception as e:
+            llm.stop()
             print(f"[orchestrator] Failed to analyze results: {e}")
 
         # Check for success
         data = load_experiments()
         exp_result = next((e for e in data["experiments"] if e["name"] == exp_name), None)
-        if exp_result and exp_result.get("success"):
+        if exp_result:
             baseline_time = data.get("baseline_time_seconds", 0)
             exp_time = exp_result.get("total_time_seconds", 0)
             speedup = ((1 - exp_time / baseline_time) * 100) if baseline_time else 0
-            print(f"\n{'🎉' * 10}")
-            print(f"  SUCCESS! {exp_name} beat the baseline!")
-            print(f"  Time: {exp_time:.1f}s vs baseline {baseline_time:.1f}s ({speedup:+.1f}%)")
-            print(f"  Val loss: {exp_result['final_val_loss']:.6f}")
-            print(f"{'🎉' * 10}\n")
-            # Keep going to find even better results
+            if exp_result.get("success"):
+                print(f"\n{'=' * 60}")
+                print(f"  FULL SUCCESS! {exp_name} beat BOTH targets!")
+                print(f"  Val loss: {exp_result['final_val_loss']:.6f} (target: {TARGET_VAL_LOSS})")
+                print(f"  Time: {exp_time:.1f}s vs baseline {baseline_time:.1f}s ({speedup:+.1f}%)")
+                print(f"{'=' * 60}\n")
+                # Keep going to find even better results
+            elif exp_result.get("partial_success"):
+                val_ok = exp_result.get("final_val_loss") is not None and exp_result["final_val_loss"] <= TARGET_VAL_LOSS
+                time_ok = exp_time and baseline_time and exp_time < baseline_time
+                print(f"\n  PARTIAL SUCCESS: {exp_name}")
+                print(f"  Val loss: {exp_result['final_val_loss']:.6f} ({'OK' if val_ok else 'MISS'})")
+                print(f"  Speed: {speedup:+.1f}% vs baseline ({'OK' if time_ok else 'MISS'})\n")
 
         exp_num += 1
         print(f"[orchestrator] Moving to next experiment...")

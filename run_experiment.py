@@ -185,8 +185,30 @@ def main():
 
     # Final parse
     parsed = parse_log(str(log_path))
-    success = parsed["final_val_loss"] is not None and parsed["final_val_loss"] <= TARGET_VAL_LOSS
     status = "completed" if returncode == 0 else "failed"
+
+    # Load current data to get baseline time for speed comparison
+    data = load_experiments()
+    baseline_time = data.get("baseline_time_seconds")
+
+    val_loss_ok = (parsed["final_val_loss"] is not None
+                   and parsed["final_val_loss"] <= TARGET_VAL_LOSS)
+    time_ok = (parsed["total_time_seconds"] is not None
+               and baseline_time is not None
+               and parsed["total_time_seconds"] < baseline_time)
+
+    if args.name == "exp0_baseline":
+        # Baseline only checks val loss (nothing to compare speed against)
+        success = val_loss_ok
+        partial_success = False
+    elif status != "completed":
+        success = False
+        partial_success = False
+    else:
+        # Full success: beats BOTH val loss target AND baseline speed
+        success = val_loss_ok and time_ok
+        # Partial: beats one but not both
+        partial_success = (val_loss_ok or time_ok) and not success
 
     updates = {
         "status": status,
@@ -195,6 +217,7 @@ def main():
         "peak_memory_mib": parsed["peak_memory_mib"],
         "final_val_loss": parsed["final_val_loss"],
         "success": success if status == "completed" else False,
+        "partial_success": partial_success if status == "completed" else False,
         "val_loss_history": parsed["val_loss_history"],
         "train_loss_history": parsed["train_loss_history"],
     }
@@ -203,7 +226,6 @@ def main():
 
     # If this is the baseline, record baseline time
     if args.name == "exp0_baseline" and status == "completed" and parsed["total_time_seconds"]:
-        data = load_experiments()
         data["baseline_time_seconds"] = parsed["total_time_seconds"]
         for exp in data["experiments"]:
             if exp["name"] == args.name:
@@ -212,16 +234,19 @@ def main():
     else:
         update_experiment(args.name, updates)
 
+    outcome = "SUCCESS (val+speed)" if success else ("PARTIAL (" + ("val loss" if val_loss_ok else "speed") + " only)" if partial_success else "not achieved")
     print(f"\n[harness] {'=' * 50}")
     print(f"[harness] Experiment: {args.name}")
     print(f"[harness] Status: {status}")
-    print(f"[harness] Final val loss: {parsed['final_val_loss']}")
+    print(f"[harness] Final val loss: {parsed['final_val_loss']} (target: {TARGET_VAL_LOSS}) -> {'OK' if val_loss_ok else 'MISS'}")
     print(f"[harness] Total time: {parsed['total_time_seconds']:.1f}s" if parsed['total_time_seconds'] else "[harness] Total time: N/A")
-    print(f"[harness] Success: {success}")
+    if baseline_time and args.name != "exp0_baseline":
+        print(f"[harness] vs baseline: {baseline_time:.1f}s -> {'FASTER' if time_ok else 'SLOWER'}")
+    print(f"[harness] Outcome: {outcome}")
     print(f"[harness] Peak memory: {parsed['peak_memory_mib']} MiB")
     print(f"[harness] {'=' * 50}")
 
-    return 0 if success else 1
+    return 0 if (success or partial_success) else 1
 
 
 if __name__ == "__main__":
