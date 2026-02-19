@@ -45,11 +45,11 @@
   .chart-container h2 { font-size: 1em; margin-bottom: 12px; color: var(--muted); }
   .chart-wrapper { position: relative; height: 360px; width: 100%; }
 
-  .experiments { display: grid; gap: 16px; }
-  .exp-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .experiments { display: grid; gap: 16px; min-width: 0; }
+  .exp-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; min-width: 0; overflow: hidden; }
   .exp-card:hover { border-color: var(--accent); }
-  .exp-card .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-  .exp-card .name { font-weight: bold; font-size: 1.05em; }
+  .exp-card .top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 8px; }
+  .exp-card .name { font-weight: bold; font-size: 1.05em; overflow-wrap: break-word; word-break: break-word; min-width: 0; flex: 1; }
   .badge { padding: 2px 8px; border-radius: 12px; font-size: 0.75em; font-weight: bold; text-transform: uppercase; }
   .badge.running { background: rgba(210,153,34,0.2); color: var(--yellow); animation: pulse 2s infinite; }
   .badge.completed { background: rgba(63,185,80,0.2); color: var(--green); }
@@ -60,7 +60,7 @@
   .exp-card.success-partial { border-color: var(--purple); }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
 
-  .exp-card .hypothesis { color: var(--muted); font-size: 0.85em; margin-bottom: 10px; font-style: italic; }
+  .exp-card .hypothesis { color: var(--muted); font-size: 0.85em; margin-bottom: 10px; font-style: italic; overflow-wrap: break-word; word-break: break-word; }
   .exp-card .metrics { display: flex; gap: 20px; flex-wrap: wrap; font-size: 0.85em; }
   .exp-card .metric { display: flex; flex-direction: column; }
   .exp-card .metric .mlabel { color: var(--muted); font-size: 0.75em; }
@@ -75,7 +75,8 @@
   .exp-card .details.open { display: block; }
   .exp-card .details .detail-section { margin-bottom: 10px; }
   .exp-card .details .detail-label { color: var(--accent); font-weight: bold; font-size: 0.85em; margin-bottom: 4px; }
-  .exp-card .details .detail-content { color: var(--muted); white-space: pre-wrap; line-height: 1.5; }
+  .exp-card .details .detail-content { color: var(--muted); white-space: pre-wrap; line-height: 1.5; overflow-wrap: break-word; word-break: break-word; }
+  .val-table-wrap { overflow-x: auto; }
   .exp-card .details .val-table { width: 100%; font-size: 0.9em; border-collapse: collapse; }
   .exp-card .details .val-table td, .exp-card .details .val-table th { padding: 3px 8px; text-align: left; border-bottom: 1px solid var(--border); }
   .exp-card .details .val-table th { color: var(--muted); font-weight: normal; }
@@ -185,7 +186,7 @@ function getOutcome(exp, baselineTime) {
   const valOk = exp.final_val_loss != null && exp.final_val_loss <= data.target_val_loss;
   const timeOk = exp.total_time_seconds != null && baselineTime != null && exp.total_time_seconds < baselineTime;
   if (valOk && timeOk) return 'full';
-  if (valOk || timeOk) return 'partial';
+  if (valOk) return 'partial';
   return 'none';
 }
 
@@ -211,7 +212,7 @@ function renderStats() {
     <div class="stat-card"><div class="label">Running</div><div class="value yellow">${running}</div></div>
     <div class="stat-card"><div class="label">Completed</div><div class="value">${completed}</div></div>
     <div class="stat-card"><div class="label">Full Success</div><div class="value green">${fullSuccesses}</div><div class="sub">val + speed</div></div>
-    <div class="stat-card"><div class="label">Partial Success</div><div class="value" style="color:var(--purple)">${partialSuccesses}</div><div class="sub">one of two</div></div>
+    <div class="stat-card"><div class="label">Partial Success</div><div class="value" style="color:var(--purple)">${partialSuccesses}</div><div class="sub">val loss only</div></div>
     <div class="stat-card"><div class="label">Failures</div><div class="value red">${failed}</div></div>
     <div class="stat-card"><div class="label">Best Val Loss</div><div class="value ${bestLoss && bestLoss <= data.target_val_loss ? 'green' : ''}">${bestLoss != null ? bestLoss.toFixed(4) : '-'}</div></div>
     <div class="stat-card"><div class="label">Baseline Time</div><div class="value">${formatTime(baselineTime)}</div></div>
@@ -287,7 +288,9 @@ function renderExperiments() {
   }
   noData.style.display = 'none';
 
-  el.innerHTML = exps.map((exp, i) => {
+  const reversed = [...exps].reverse();
+  el.innerHTML = reversed.map((exp) => {
+    const i = exps.indexOf(exp);
     const baselineTime = data.baseline_time_seconds;
     const outcome = getOutcome(exp, baselineTime);
     const valOk = exp.final_val_loss != null && exp.final_val_loss <= data.target_val_loss;
@@ -325,7 +328,7 @@ function renderExperiments() {
       const rows = exp.val_loss_history.map(p =>
         `<tr><td>${p.step}</td><td>${p.val_loss.toFixed(4)}</td><td>${p.val_loss <= data.target_val_loss ? '<span style="color:var(--green)">&#10003;</span>' : ''}</td></tr>`
       ).join('');
-      valTableHtml = `<table class="val-table"><tr><th>Step</th><th>Val Loss</th><th></th></tr>${rows}</table>`;
+      valTableHtml = `<div class="val-table-wrap"><table class="val-table"><tr><th>Step</th><th>Val Loss</th><th></th></tr>${rows}</table></div>`;
     }
 
     // Avg step time
@@ -341,7 +344,7 @@ function renderExperiments() {
     else if (outcome === 'full') { badgeClass = 'completed'; badgeText = 'success'; }
     else if (outcome === 'partial') {
       badgeClass = 'partial';
-      badgeText = valOk ? 'partial (val)' : 'partial (speed)';
+      badgeText = 'partial (val)';
     } else { badgeClass = 'pending'; badgeText = exp.status; }
 
     const cardClass = outcome === 'full' ? 'success-full' : outcome === 'partial' ? 'success-partial' : '';
@@ -377,7 +380,7 @@ function renderExperiments() {
             <div class="detail-label">Timing</div>
             <div class="detail-content">Total: ${formatTime(exp.total_time_seconds)} | Avg step: ${avgStepTime} | Steps: ${lastStep}/${totalSteps}${exp.start_time ? ' | Started: ' + new Date(exp.start_time).toLocaleString() : ''}${exp.end_time ? ' | Ended: ' + new Date(exp.end_time).toLocaleString() : ''}</div>
           </div>
-          ${exp.claude_metadata?.run_args ? `<div class="detail-section"><div class="detail-label">Run Command</div><div class="detail-content" style="font-family:monospace;font-size:0.85em;background:var(--bg);padding:8px;border-radius:4px;">torchrun --standalone --nproc_per_node=1 train_gpt2.py ${exp.claude_metadata.run_args}</div></div>` : ''}
+          ${exp.claude_metadata?.run_args ? `<div class="detail-section"><div class="detail-label">Run Command</div><div class="detail-content" style="font-family:monospace;font-size:0.85em;background:var(--bg);padding:8px;border-radius:4px;overflow-wrap:break-word;word-break:break-all;">torchrun --standalone --nproc_per_node=1 train_gpt2.py ${exp.claude_metadata.run_args}</div></div>` : ''}
           <div class="detail-section">
             <div class="detail-label">Script Location</div>
             <div class="detail-content" style="font-family:monospace;">experiments/${exp.name}/train_gpt2.py</div>

@@ -339,7 +339,20 @@ IMPORTANT:
 
     provider_name = type(llm).__name__.replace("Provider", "")
     print(f"[orchestrator] Calling {provider_name} to design experiment #{exp_num}...")
+
+    log_dir = PROJECT_ROOT / "logs"
+    log_dir.mkdir(exist_ok=True)
+    log_path = log_dir / f"exp{exp_num}_prompt.txt"
+    with open(log_path, "w") as f:
+        f.write(prompt)
+    print(f"[orchestrator] Prompt saved to {log_path.relative_to(PROJECT_ROOT)}")
+
     text = llm.chat(prompt, max_tokens=16000)
+
+    resp_path = log_dir / f"exp{exp_num}_response.txt"
+    with open(resp_path, "w") as f:
+        f.write(text)
+    print(f"[orchestrator] Response saved to {resp_path.relative_to(PROJECT_ROOT)}")
 
     # Try to parse JSON - handle markdown fencing and surrounding text
     result = None

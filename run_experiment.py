@@ -207,8 +207,8 @@ def main():
     else:
         # Full success: beats BOTH val loss target AND baseline speed
         success = val_loss_ok and time_ok
-        # Partial: beats one but not both
-        partial_success = (val_loss_ok or time_ok) and not success
+        # Partial: val loss achieved but not faster than baseline
+        partial_success = val_loss_ok and not success
 
     updates = {
         "status": status,
@@ -234,7 +234,7 @@ def main():
     else:
         update_experiment(args.name, updates)
 
-    outcome = "SUCCESS (val+speed)" if success else ("PARTIAL (" + ("val loss" if val_loss_ok else "speed") + " only)" if partial_success else "not achieved")
+    outcome = "SUCCESS (val+speed)" if success else ("PARTIAL (val loss only)" if partial_success else "not achieved")
     print(f"\n[harness] {'=' * 50}")
     print(f"[harness] Experiment: {args.name}")
     print(f"[harness] Status: {status}")
