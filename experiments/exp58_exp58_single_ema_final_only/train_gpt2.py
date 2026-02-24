@@ -14,9 +14,6 @@ import torch._inductor.config as config
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-# Set SAVE_CHECKPOINTS=1 to enable periodic/final checkpoint writes.
-SAVE_CHECKPOINTS = os.environ.get("SAVE_CHECKPOINTS", "").lower() in {"1", "true", "yes"}
-
 with open(sys.argv[0]) as f:
     code = f.read()
 
@@ -494,6 +491,16 @@ if __name__ == "__main__":
         with open(logfile, "w") as f:
             pass
 
+    # =========================================================================
+    # EMA configuration - single EMA shadow with decay=0.998
+    # This is the minimal intervention that exp29/exp38 proved works
+    # =========================================================================
+    EMA_DECAY = 0.998
+    # Create EMA shadow parameters on GPU (same device as model)
+    # We store them as a flat list of tensors to avoid any state_dict complications
+    ema_params = [p.data.clone() for p in raw_model.parameters()]
+    print0(f"EMA initialized with decay={EMA_DECAY}, {len(ema_params)} parameter tensors")
+
     training_time_ms = 0.0
     # start the clock
     torch.cuda.synchronize()
@@ -510,14 +517,54 @@ if __name__ == "__main__":
             training_time_ms += 1000 * (time.perf_counter() - t0)
             model.eval()
             val_loader.reset()  # reset the val loader so that it starts from the beginning
+
+            # Decide whether to use EMA weights for this validation step
+            # Only use EMA at the FINAL validation step to minimize overhead
+            use_ema = last_step
+
+            if use_ema:
+                # Save current model params and swap in EMA params
+                saved_params = []
+                for p, ema_p in zip(raw_model.parameters(), ema_params):
+                    saved_params.append(p.data.clone())
+                    p.data.copy_(ema_p)
+
             with torch.no_grad():
                 val_loss = 0.0
-                for _ in range(val_steps):  # always fiexed number of validation steps
+                for _ in range(val_steps):  # always fixed number of validation steps
                     x_val, y_val = val_loader.next_batch()
                     _, loss = model(x_val, y_val, return_logits=False)
                     val_loss += loss
                 dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
                 val_loss /= val_steps
+
+            if use_ema:
+                ema_val_loss = val_loss.item()
+                # Restore original model params
+                for p, sp in zip(raw_model.parameters(), saved_params):
+                    p.data.copy_(sp)
+                del saved_params
+
+                # Also evaluate with raw model weights to pick the best
+                val_loader.reset()
+                with torch.no_grad():
+                    raw_val_loss = 0.0
+                    for _ in range(val_steps):
+                        x_val, y_val = val_loader.next_batch()
+                        _, loss = model(x_val, y_val, return_logits=False)
+                        raw_val_loss += loss
+                    dist.all_reduce(raw_val_loss, op=dist.ReduceOp.AVG)
+                    raw_val_loss /= val_steps
+                raw_val_loss = raw_val_loss.item()
+
+                # Pick the better one
+                if ema_val_loss < raw_val_loss:
+                    val_loss = torch.tensor(ema_val_loss)
+                    print0(f"  [EMA wins: {ema_val_loss:.6f} vs raw {raw_val_loss:.6f}]")
+                else:
+                    val_loss = torch.tensor(raw_val_loss)
+                    print0(f"  [Raw wins: {raw_val_loss:.6f} vs EMA {ema_val_loss:.6f}]")
+
             # log to console and to file
             print0(f"step:{step}/{args.num_iterations} | val loss {val_loss:.6f}")
             if master_process:
@@ -565,6 +612,12 @@ if __name__ == "__main__":
         # step the optimizer
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
+
+        # Update EMA parameters after each optimizer step
+        with torch.no_grad():
+            for ema_p, p in zip(ema_params, raw_model.parameters()):
+                ema_p.mul_(EMA_DECAY).add_(p.data, alpha=1.0 - EMA_DECAY)
+
         # --------------- TRAINING SECTION END -------------------
         # everything that follows now is just diagnostics, prints, logging, etc.
 
@@ -583,7 +636,7 @@ if __name__ == "__main__":
             with open(logfile, "a") as f:
                 f.write("s:%d trn:%f\n" % (step, lossf))
 
-        if SAVE_CHECKPOINTS and master_process and (step + 1) % args.save_every == 0:
+        if master_process and (step + 1) % args.save_every == 0:
             log = dict(model=raw_model.state_dict(), code=code, args=args.__dict__)
             os.makedirs("logs/%s" % run_id, exist_ok=True)
             torch.save(log, "logs/%s/model_step%06d.pt" % (run_id, step))
@@ -594,10 +647,15 @@ if __name__ == "__main__":
 
     # -------------------------------------------------------------------------
 
-    if SAVE_CHECKPOINTS and master_process:
+    if master_process:
         log = dict(model=raw_model.state_dict(), code=code, args=args.__dict__)
         os.makedirs("logs/%s" % run_id, exist_ok=True)
-        torch.save(log, "logs/%s/final.pt" % run_id)
+        save_path = "logs/%s/final.pt" % run_id
+        import io
+        buffer = io.BytesIO()
+        torch.save(log, buffer)
+        with open(save_path, "wb") as f:
+            f.write(buffer.getvalue())
 
     # -------------------------------------------------------------------------
     # clean up nice

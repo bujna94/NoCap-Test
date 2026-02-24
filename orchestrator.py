@@ -27,8 +27,11 @@ import requests as _requests_lib
 PROJECT_ROOT = Path(__file__).parent.resolve()
 EXPERIMENTS_JSON = PROJECT_ROOT / "experiments.json"
 EXPERIMENTS_DIR = PROJECT_ROOT / "experiments"
+IDEA_MD = PROJECT_ROOT / "IDEA.md"
 TARGET_VAL_LOSS = 3.3821
 CLAUDE_MODEL = "claude-opus-4-6"  # most capable for novel research ideas
+# By default, do not persist LLM prompt/response archives to disk.
+SAVE_LLM_IO_LOGS = os.environ.get("SAVE_LLM_IO_LOGS", "").lower() in {"1", "true", "yes"}
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +244,10 @@ def get_experiment_summary():
 
         lines.append(f"## {name}")
         lines.append(f"  Status: {status} | Val Loss: {val} | Time: {time_s}s | Outcome: {outcome}")
+        if isinstance(val, (int, float)):
+            lines.append(f"  Delta to target: {val - TARGET_VAL_LOSS:+.6f}")
+        if isinstance(time_s, (int, float)) and baseline_time:
+            lines.append(f"  Speedup vs baseline: {(1 - time_s / baseline_time) * 100:+.3f}%")
         lines.append(f"  Hypothesis: {desc}")
         if findings:
             lines.append(f"  Findings: {findings}")
@@ -270,7 +277,106 @@ def get_next_exp_number():
     return n
 
 
-def call_claude_for_experiment(llm, exp_num):
+def parse_json_from_text(text):
+    """Parse JSON payload from raw model output."""
+    # Method 1: direct parse
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Method 2: strip markdown fences
+    cleaned = re.sub(r"^```(?:json)?\n?", "", text)
+    cleaned = re.sub(r"\n?```$", "", cleaned)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # Method 3: object span from first { to last }
+    first_brace = text.find("{")
+    last_brace = text.rfind("}")
+    if first_brace != -1 and last_brace > first_brace:
+        json_str = text[first_brace:last_brace + 1]
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+def proposal_quality_gate(exp_data, baseline_script):
+    """
+    Fast deterministic gate to reject proposals that don't clearly target BOTH
+    speed and quality, or that are effectively pure hyperparameter tuning.
+    """
+    required_keys = [
+        "hypothesis",
+        "description",
+        "experiment_name",
+        "training_script",
+        "expected_impact",
+        "risk_assessment",
+        "dual_objective_plan",
+    ]
+    for key in required_keys:
+        if key not in exp_data:
+            return False, f"Missing required key: {key}"
+
+    plan = exp_data.get("dual_objective_plan", {})
+    if not isinstance(plan, dict):
+        return False, "dual_objective_plan must be an object"
+    for key in ["speed_path", "quality_path", "tradeoff_guard"]:
+        if not str(plan.get(key, "")).strip():
+            return False, f"dual_objective_plan.{key} is required"
+
+    combined = " ".join(
+        [
+            str(exp_data.get("hypothesis", "")),
+            str(exp_data.get("description", "")),
+            str(exp_data.get("expected_impact", "")),
+            str(plan.get("speed_path", "")),
+            str(plan.get("quality_path", "")),
+            str(plan.get("tradeoff_guard", "")),
+        ]
+    ).lower()
+    script_lower = str(exp_data.get("training_script", "")).lower()
+
+    speed_markers = [
+        "speed", "faster", "throughput", "time", "wall-clock", "step time",
+        "compute", "flop", "skip", "early-exit", "prune", "cache"
+    ]
+    quality_markers = [
+        "val loss", "validation loss", "loss", "stability", "generalization",
+        "regulariz", "ema", "swa", "quality"
+    ]
+    has_speed = any(m in combined for m in speed_markers)
+    has_quality = any(m in combined for m in quality_markers)
+    if not has_speed or not has_quality:
+        return False, "Proposal must explicitly state mechanisms for BOTH speed and val-loss quality"
+
+    # Reject nearly unchanged scripts.
+    if script_lower.strip() == baseline_script.lower().strip():
+        return False, "Training script is unchanged from baseline"
+
+    # Reject proposals that are mostly hyperparameter edits without algorithmic changes.
+    hp_markers = [
+        "learning_rate", "weight_decay", "warmup_iters", "warmdown_iters",
+        "batch_size", "sequence_length", "grad_accumulation_steps"
+    ]
+    algo_markers = [
+        "forward(", "backward(", "optimizer.step", "loss", "attention",
+        "ema", "swa", "auxiliary", "regulariz", "curriculum", "checkpoint"
+    ]
+    hp_hits = sum(1 for m in hp_markers if m in script_lower)
+    algo_hits = sum(1 for m in algo_markers if m in script_lower)
+    if hp_hits >= 6 and algo_hits < 4:
+        return False, "Looks like hyperparameter-only tuning; needs algorithmic change"
+
+    return True, "ok"
+
+
+def call_claude_for_experiment(llm, exp_num, feedback=""):
     """Ask the LLM to analyze results and propose the next experiment."""
     baseline_script = get_baseline_script()
     summary = get_experiment_summary()
@@ -323,6 +429,12 @@ Respond with EXACTLY this JSON structure (no markdown, no code fences, just raw 
     "experiment_name": "short_snake_case_name",
     "display_name": "Human Readable Name",
     "training_script": "... complete Python training script ...",
+    "dual_objective_plan": {{
+        "speed_path": "Concrete mechanism expected to reduce wall-clock or step time",
+        "quality_path": "Concrete mechanism expected to improve or preserve val loss",
+        "tradeoff_guard": "How you prevent speed gains from hurting quality, or vice versa"
+    }},
+    "novelty_against_prior": "Why this is different from prior attempts in the summary",
     "expected_impact": "What you expect to happen and why",
     "risk_assessment": "What could go wrong"
 }}
@@ -336,62 +448,34 @@ IMPORTANT:
 - Keep the same data loading format (binary shards with the existing header format)
 - The script must work with the EXACT same command-line args as the baseline
 """
+    if feedback:
+        prompt += f"\n\n## Revision Feedback\nYour prior proposal was rejected by the quality gate for this reason:\n- {feedback}\nRevise to address this explicitly."
 
     provider_name = type(llm).__name__.replace("Provider", "")
     print(f"[orchestrator] Calling {provider_name} to design experiment #{exp_num}...")
 
-    log_dir = PROJECT_ROOT / "logs"
-    log_dir.mkdir(exist_ok=True)
-    log_path = log_dir / f"exp{exp_num}_prompt.txt"
-    with open(log_path, "w") as f:
-        f.write(prompt)
-    print(f"[orchestrator] Prompt saved to {log_path.relative_to(PROJECT_ROOT)}")
+    if SAVE_LLM_IO_LOGS:
+        log_dir = PROJECT_ROOT / "logs"
+        log_dir.mkdir(exist_ok=True)
+        log_path = log_dir / f"exp{exp_num}_prompt.txt"
+        with open(log_path, "w") as f:
+            f.write(prompt)
+        print(f"[orchestrator] Prompt saved to {log_path.relative_to(PROJECT_ROOT)}")
 
     text = llm.chat(prompt, max_tokens=16000)
 
-    resp_path = log_dir / f"exp{exp_num}_response.txt"
-    with open(resp_path, "w") as f:
-        f.write(text)
-    print(f"[orchestrator] Response saved to {resp_path.relative_to(PROJECT_ROOT)}")
+    if SAVE_LLM_IO_LOGS:
+        resp_path = log_dir / f"exp{exp_num}_response.txt"
+        with open(resp_path, "w") as f:
+            f.write(text)
+        print(f"[orchestrator] Response saved to {resp_path.relative_to(PROJECT_ROOT)}")
 
-    # Try to parse JSON - handle markdown fencing and surrounding text
-    result = None
-
-    # Method 1: direct parse
-    try:
-        result = json.loads(text)
-    except json.JSONDecodeError:
-        pass
-
-    # Method 2: strip markdown fences
-    if result is None:
-        cleaned = re.sub(r"^```(?:json)?\n?", "", text)
-        cleaned = re.sub(r"\n?```$", "", cleaned)
-        try:
-            result = json.loads(cleaned)
-        except json.JSONDecodeError:
-            pass
-
-    # Method 3: find JSON object in the text (between first { and last })
-    if result is None:
-        first_brace = text.find("{")
-        last_brace = text.rfind("}")
-        if first_brace != -1 and last_brace > first_brace:
-            json_str = text[first_brace:last_brace + 1]
-            try:
-                result = json.loads(json_str)
-            except json.JSONDecodeError:
-                pass
+    result = parse_json_from_text(text)
 
     if result is None:
         print(f"[orchestrator] Failed to parse LLM response as JSON")
         print(f"[orchestrator] Raw response (first 500 chars): {text[:500]}")
         raise ValueError("Could not extract JSON from LLM response")
-
-    required_keys = ["hypothesis", "description", "experiment_name", "training_script"]
-    for key in required_keys:
-        if key not in result:
-            raise ValueError(f"LLM response missing required key: {key}")
 
     return result
 
@@ -489,6 +573,25 @@ def record_findings(exp_name, findings):
     save_experiments(data)
 
 
+def enrich_experiment_outcome(exp_name):
+    """Add structured outcome fields for better future prompt conditioning."""
+    data = load_experiments()
+    baseline_time = data.get("baseline_time_seconds")
+    for exp in data["experiments"]:
+        if exp["name"] != exp_name:
+            continue
+        val = exp.get("final_val_loss")
+        tm = exp.get("total_time_seconds")
+        val_ok = val is not None and val <= TARGET_VAL_LOSS
+        time_ok = baseline_time is not None and tm is not None and tm < baseline_time
+        exp["val_target_met"] = val_ok
+        exp["faster_than_baseline"] = time_ok
+        exp["delta_to_target"] = (val - TARGET_VAL_LOSS) if val is not None else None
+        exp["speedup_pct"] = ((1 - (tm / baseline_time)) * 100) if (tm is not None and baseline_time) else None
+        break
+    save_experiments(data)
+
+
 def analyze_results(llm, exp_name):
     """Ask the LLM to analyze the results of the latest experiment."""
     summary = get_experiment_summary()
@@ -501,6 +604,70 @@ def analyze_results(llm, exp_name):
 Respond with just the analysis text, no JSON or formatting."""
 
     return llm.chat(prompt, max_tokens=1000)
+
+
+def self_critique_and_revise(llm, exp_data, exp_num):
+    """Ask the model to critique and revise its own proposal toward full success."""
+    critique_prompt = f"""You proposed experiment #{exp_num}. Critique it against the requirement:
+- Must target BOTH: (1) val_loss <= {TARGET_VAL_LOSS} and (2) faster-than-baseline time.
+
+Return ONLY revised JSON in the same schema as before.
+Do not include markdown.
+
+Current proposal JSON:
+{json.dumps(exp_data, ensure_ascii=True)}
+"""
+    revised_text = llm.chat(critique_prompt, max_tokens=16000)
+    revised = parse_json_from_text(revised_text)
+    if revised is None:
+        raise ValueError("Self-critique revision did not return valid JSON")
+    return revised
+
+
+def update_idea_md(exp_result, baseline_time):
+    """Append concise notes for partial/full successes into IDEA.md."""
+    if not exp_result:
+        return
+    if not (exp_result.get("success") or exp_result.get("partial_success")):
+        return
+
+    exp_name = exp_result.get("name", "")
+    if not exp_name:
+        return
+
+    existing = ""
+    if IDEA_MD.exists():
+        existing = IDEA_MD.read_text()
+        if f"## {exp_name}" in existing:
+            return  # avoid duplicate entries on reruns
+
+    if not existing.strip():
+        IDEA_MD.write_text("# IDEA.md\n\nAuto-updated summary of successful attempts.\n")
+        existing = IDEA_MD.read_text()
+
+    val_loss = exp_result.get("final_val_loss")
+    total_time = exp_result.get("total_time_seconds")
+    outcome = "FULL SUCCESS (val + speed)" if exp_result.get("success") else "PARTIAL SUCCESS (val-only)"
+    speedup = None
+    if baseline_time and total_time:
+        speedup = (1 - (total_time / baseline_time)) * 100
+    desc_text = (exp_result.get("description", "") or "run").replace('"', "'")
+
+    lines = [
+        "",
+        f"## {exp_name}",
+        f"- Date: {datetime.now().isoformat()}",
+        f"- Outcome: {outcome}",
+        f"- Final val loss: {val_loss}",
+        f"- Total time (s): {total_time}",
+        f"- Baseline time (s): {baseline_time}",
+        f"- Speedup vs baseline: {f'{speedup:+.3f}%' if speedup is not None else 'N/A'}",
+        f"- Description: {exp_result.get('description', '')}",
+        f"- Key findings: {exp_result.get('key_findings', '')}",
+        f"- Reproduce: `python run_experiment.py --name {exp_name} --run-sh experiments/{exp_name}/run.sh --description \"{desc_text}\"`",
+    ]
+    with open(IDEA_MD, "a") as f:
+        f.write("\n".join(lines) + "\n")
 
 
 def run_baseline(skip=False):
@@ -580,6 +747,7 @@ def main():
     print(f"  LLM:    {provider_label} ({model_label})")
     print(f"  Target: val_loss ≤ {TARGET_VAL_LOSS}")
     print(f"  Dashboard: http://localhost:8080/dashboard/index.html")
+    print(f"  Save LLM I/O logs: {'ON' if SAVE_LLM_IO_LOGS else 'OFF'} (set SAVE_LLM_IO_LOGS=1 to enable)")
     print("=" * 60)
 
     # Start dashboard server if not running
@@ -614,22 +782,36 @@ def main():
         print(f"  EXPERIMENT LOOP - Iteration #{exp_num}")
         print(f"{'=' * 60}")
 
-        # Ask LLM to design the next experiment (start server, call, then stop before GPU work)
+        # Ask LLM to design the next experiment, self-critique, and pass quality gate.
+        exp_data = None
+        gate_passed = False
+        proposal_feedback = ""
         llm.start()
         for attempt in range(args.max_retries):
             try:
-                exp_data = call_claude_for_experiment(llm, exp_num)
-                break
+                proposed = call_claude_for_experiment(llm, exp_num, feedback=proposal_feedback)
+                exp_data = self_critique_and_revise(llm, proposed, exp_num)
+
+                baseline_script = get_baseline_script()
+                gate_ok, gate_reason = proposal_quality_gate(exp_data, baseline_script)
+                if gate_ok:
+                    print("[orchestrator] Proposal quality gate: PASS")
+                    gate_passed = True
+                    break
+
+                proposal_feedback = gate_reason
+                print(f"[orchestrator] Proposal quality gate: FAIL ({gate_reason})")
+                if attempt < args.max_retries - 1:
+                    time.sleep(5)
             except Exception as e:
                 print(f"[orchestrator] LLM error (attempt {attempt+1}/{args.max_retries}): {e}")
                 if attempt < args.max_retries - 1:
                     time.sleep(10)
-                else:
-                    llm.stop()
-                    print("[orchestrator] Skipping this iteration due to API errors")
-                    exp_num += 1
-                    continue
         llm.stop()
+        if exp_data is None or not gate_passed:
+            print("[orchestrator] Skipping this iteration due to repeated proposal failures")
+            exp_num += 1
+            continue
 
         print(f"[orchestrator] Hypothesis: {exp_data.get('hypothesis', 'N/A')}")
         print(f"[orchestrator] Experiment: {exp_data.get('display_name', exp_data['experiment_name'])}")
@@ -639,6 +821,8 @@ def main():
             "hypothesis": exp_data.get("hypothesis", ""),
             "expected_impact": exp_data.get("expected_impact", ""),
             "risk_assessment": exp_data.get("risk_assessment", ""),
+            "dual_objective_plan": exp_data.get("dual_objective_plan", {}),
+            "novelty_against_prior": exp_data.get("novelty_against_prior", ""),
             "run_args": BASELINE_RUN_ARGS,
         }
 
@@ -727,6 +911,7 @@ Please provide the COMPLETE fixed training script. Respond with ONLY the Python 
             findings = analyze_results(llm, exp_name)
             llm.stop()
             record_findings(exp_name, findings)
+            enrich_experiment_outcome(exp_name)
             print(f"[orchestrator] Analysis: {findings}")
         except Exception as e:
             llm.stop()
@@ -745,6 +930,7 @@ Please provide the COMPLETE fixed training script. Respond with ONLY the Python 
                 print(f"  Val loss: {exp_result['final_val_loss']:.6f} (target: {TARGET_VAL_LOSS})")
                 print(f"  Time: {exp_time:.1f}s vs baseline {baseline_time:.1f}s ({speedup:+.1f}%)")
                 print(f"{'=' * 60}\n")
+                update_idea_md(exp_result, baseline_time)
                 # Keep going to find even better results
             elif exp_result.get("partial_success"):
                 val_ok = exp_result.get("final_val_loss") is not None and exp_result["final_val_loss"] <= TARGET_VAL_LOSS
@@ -752,6 +938,7 @@ Please provide the COMPLETE fixed training script. Respond with ONLY the Python 
                 print(f"\n  PARTIAL SUCCESS: {exp_name}")
                 print(f"  Val loss: {exp_result['final_val_loss']:.6f} ({'OK' if val_ok else 'MISS'})")
                 print(f"  Speed: {speedup:+.1f}% vs baseline ({'OK' if time_ok else 'MISS'})\n")
+                update_idea_md(exp_result, baseline_time)
 
         exp_num += 1
         print(f"[orchestrator] Moving to next experiment...")

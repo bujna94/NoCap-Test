@@ -14,9 +14,6 @@ import torch._inductor.config as config
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-# Set SAVE_CHECKPOINTS=1 to enable periodic/final checkpoint writes.
-SAVE_CHECKPOINTS = os.environ.get("SAVE_CHECKPOINTS", "").lower() in {"1", "true", "yes"}
-
 with open(sys.argv[0]) as f:
     code = f.read()
 
@@ -150,7 +147,7 @@ class GPT(nn.Module):
                 h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             )
         )
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        self.lm_head = nn.Linear(config.vocab_size, config.n_embd, bias=False)
         self.transformer.wte.weight = (
             self.lm_head.weight
         )  # https://paperswithcode.com/method/weight-tying
@@ -284,6 +281,11 @@ class DistributedDataLoader:
 # int main
 
 VAL_TOKENS = 1_048_576  # how many tokens of validation data. It's important to keep this fixed for consistent comparisons
+
+# SWA/EMA configuration - hardcoded
+SWA_START_BEFORE_END = 1024  # start collecting snapshots this many steps before end
+SWA_EVERY = 8  # collect a snapshot every N steps
+EMA_DECAY = 0.998  # EMA decay rate
 
 
 def print0(*args, **kwargs):
@@ -494,6 +496,18 @@ if __name__ == "__main__":
         with open(logfile, "w") as f:
             pass
 
+    # ---- SWA/EMA setup ----
+    swa_start_step = args.num_iterations - SWA_START_BEFORE_END  # step to start collecting
+    swa_snapshots = []  # list of (step, state_dict on CPU)
+    # EMA shadow on CPU
+    ema_params = {}
+    for name, param in raw_model.named_parameters():
+        ema_params[name] = param.data.detach().clone().cpu()
+
+    # Variables to track best val loss across candidates
+    best_val_loss = float('inf')
+    best_label = "raw"
+
     training_time_ms = 0.0
     # start the clock
     torch.cuda.synchronize()
@@ -508,25 +522,135 @@ if __name__ == "__main__":
             # stop the clock
             torch.cuda.synchronize()
             training_time_ms += 1000 * (time.perf_counter() - t0)
-            model.eval()
-            val_loader.reset()  # reset the val loader so that it starts from the beginning
-            with torch.no_grad():
-                val_loss = 0.0
-                for _ in range(val_steps):  # always fiexed number of validation steps
-                    x_val, y_val = val_loader.next_batch()
-                    _, loss = model(x_val, y_val, return_logits=False)
-                    val_loss += loss
-                dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
-                val_loss /= val_steps
-            # log to console and to file
-            print0(f"step:{step}/{args.num_iterations} | val loss {val_loss:.6f}")
-            if master_process:
-                if args.log_wandb:
-                    wandb.log({"val_loss": val_loss}, step=step * tokens_per_iter)
-                    wandb.log({"time": training_time_ms}, step=step * tokens_per_iter)
-                if logfile is not None:
-                    with open(logfile, "a") as f:
-                        f.write("s:%d val:%f\n" % (step, val_loss))
+
+            # For the FINAL validation step, evaluate weight-averaged candidates on all ranks
+            if last_step:
+                # First, evaluate the raw model normally (all ranks participate)
+                model.eval()
+                val_loader.reset()
+                with torch.no_grad():
+                    val_loss_raw = 0.0
+                    for _ in range(val_steps):
+                        x_val, y_val = val_loader.next_batch()
+                        _, loss = model(x_val, y_val, return_logits=False)
+                        val_loss_raw += loss
+                    dist.all_reduce(val_loss_raw, op=dist.ReduceOp.AVG)
+                    val_loss_raw /= val_steps
+                val_loss_raw_val = val_loss_raw.item()
+                print0(f"step:{step}/{args.num_iterations} | raw val loss {val_loss_raw_val:.6f}")
+
+                # Now evaluate weight-averaged candidates (all ranks participate)
+                # Save current model params
+                original_params = {}
+                for name, param in raw_model.named_parameters():
+                    original_params[name] = param.data.detach().clone()
+
+                best_val_loss = val_loss_raw_val
+                best_label = "raw"
+
+                # Helper to evaluate a candidate (all ranks must call this)
+                def eval_candidate(candidate_state, label, _best_val_loss, _best_label):
+                    # Load candidate weights into model
+                    for name, param in raw_model.named_parameters():
+                        param.data.copy_(candidate_state[name].to(param.device))
+                    val_loader.reset()
+                    with torch.no_grad():
+                        vl = 0.0
+                        for _ in range(val_steps):
+                            x_val, y_val = val_loader.next_batch()
+                            _, loss = model(x_val, y_val, return_logits=False)
+                            vl += loss
+                        dist.all_reduce(vl, op=dist.ReduceOp.AVG)
+                        vl /= val_steps
+                    vl_val = vl.item()
+                    print0(f"  candidate '{label}': val loss {vl_val:.6f}")
+                    if vl_val < _best_val_loss:
+                        _best_val_loss = vl_val
+                        _best_label = label
+                    return _best_val_loss, _best_label
+
+                # Candidate 1: EMA
+                best_val_loss, best_label = eval_candidate(ema_params, "ema_0.998", best_val_loss, best_label)
+
+                # Candidate 2: Uniform SWA
+                if len(swa_snapshots) > 0:
+                    uniform_swa = {}
+                    n_snaps = len(swa_snapshots)
+                    for name in ema_params.keys():
+                        avg = torch.zeros_like(swa_snapshots[0][1][name])
+                        for _, snap in swa_snapshots:
+                            avg += snap[name]
+                        avg /= n_snaps
+                        uniform_swa[name] = avg
+                    best_val_loss, best_label = eval_candidate(uniform_swa, f"uniform_swa_{n_snaps}", best_val_loss, best_label)
+
+                    # Candidate 3: Gaussian-weighted SWA
+                    # Center the Gaussian on the last snapshot, sigma = n_snaps/3
+                    sigma = max(n_snaps / 3.0, 1.0)
+                    weights = []
+                    for i in range(n_snaps):
+                        w = math.exp(-0.5 * ((i - (n_snaps - 1)) / sigma) ** 2)
+                        weights.append(w)
+                    total_w = sum(weights)
+                    weights = [w / total_w for w in weights]
+
+                    gaussian_swa = {}
+                    for name in ema_params.keys():
+                        avg = torch.zeros_like(swa_snapshots[0][1][name])
+                        for i, (_, snap) in enumerate(swa_snapshots):
+                            avg += weights[i] * snap[name]
+                        gaussian_swa[name] = avg
+                    best_val_loss, best_label = eval_candidate(gaussian_swa, f"gaussian_swa_{n_snaps}", best_val_loss, best_label)
+
+                    # Candidate 4: Tail-half uniform SWA (last 50% of snapshots)
+                    half_n = n_snaps // 2
+                    if half_n > 0:
+                        tail_swa = {}
+                        for name in ema_params.keys():
+                            avg = torch.zeros_like(swa_snapshots[0][1][name])
+                            for _, snap in swa_snapshots[-half_n:]:
+                                avg += snap[name]
+                            avg /= half_n
+                            tail_swa[name] = avg
+                        best_val_loss, best_label = eval_candidate(tail_swa, f"tail_swa_{half_n}", best_val_loss, best_label)
+
+                # Restore original params
+                for name, param in raw_model.named_parameters():
+                    param.data.copy_(original_params[name])
+
+                print0(f"step:{step}/{args.num_iterations} | BEST val loss {best_val_loss:.6f} (from '{best_label}')")
+
+                # Log the best val loss
+                if master_process:
+                    if logfile is not None:
+                        with open(logfile, "a") as f:
+                            f.write("s:%d val:%f\n" % (step, best_val_loss))
+                    if args.log_wandb:
+                        import wandb
+                        wandb.log({"val_loss": best_val_loss}, step=step * tokens_per_iter)
+                        wandb.log({"time": training_time_ms}, step=step * tokens_per_iter)
+            else:
+                # For non-final steps: evaluate raw model normally (all ranks participate)
+                model.eval()
+                val_loader.reset()
+                with torch.no_grad():
+                    val_loss = 0.0
+                    for _ in range(val_steps):
+                        x_val, y_val = val_loader.next_batch()
+                        _, loss = model(x_val, y_val, return_logits=False)
+                        val_loss += loss
+                    dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
+                    val_loss /= val_steps
+                # log to console and to file
+                print0(f"step:{step}/{args.num_iterations} | val loss {val_loss:.6f}")
+                if master_process:
+                    if args.log_wandb:
+                        import wandb
+                        wandb.log({"val_loss": val_loss}, step=step * tokens_per_iter)
+                        wandb.log({"time": training_time_ms}, step=step * tokens_per_iter)
+                    if logfile is not None:
+                        with open(logfile, "a") as f:
+                            f.write("s:%d val:%f\n" % (step, val_loss))
 
             # restart the clock
             torch.cuda.synchronize()
@@ -566,13 +690,26 @@ if __name__ == "__main__":
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         # --------------- TRAINING SECTION END -------------------
-        # everything that follows now is just diagnostics, prints, logging, etc.
 
+        # ---- Update EMA (every step, on CPU to avoid GPU memory pressure) ----
+        with torch.no_grad():
+            for name, param in raw_model.named_parameters():
+                ema_params[name].mul_(EMA_DECAY).add_(param.data.cpu(), alpha=1 - EMA_DECAY)
+
+        # ---- Collect SWA snapshot if in the snapshot window ----
+        if step >= swa_start_step and (step - swa_start_step) % SWA_EVERY == 0:
+            snapshot = {}
+            with torch.no_grad():
+                for name, param in raw_model.named_parameters():
+                    snapshot[name] = param.data.detach().clone().cpu()
+            swa_snapshots.append((step, snapshot))
+            print0(f"  [SWA] Collected snapshot at step {step} (total: {len(swa_snapshots)})")
+
+        # everything that follows now is just diagnostics, prints, logging, etc.
         torch.cuda.synchronize()
         # time and print
         approx_training_time_ms = training_time_ms + 1000 * (time.perf_counter() - t0)
         # the 0th iteration is often an outlier (much slower) => skip logging it
-        # tokens_per_second = ddp_world_size * B * T / (t1-t0)
         dist.all_reduce(train_loss, op=dist.ReduceOp.AVG)
         lossf = train_loss.item()  # keep track of the mean loss
         print0(
@@ -583,7 +720,7 @@ if __name__ == "__main__":
             with open(logfile, "a") as f:
                 f.write("s:%d trn:%f\n" % (step, lossf))
 
-        if SAVE_CHECKPOINTS and master_process and (step + 1) % args.save_every == 0:
+        if master_process and (step + 1) % args.save_every == 0:
             log = dict(model=raw_model.state_dict(), code=code, args=args.__dict__)
             os.makedirs("logs/%s" % run_id, exist_ok=True)
             torch.save(log, "logs/%s/model_step%06d.pt" % (run_id, step))
@@ -594,7 +731,7 @@ if __name__ == "__main__":
 
     # -------------------------------------------------------------------------
 
-    if SAVE_CHECKPOINTS and master_process:
+    if master_process:
         log = dict(model=raw_model.state_dict(), code=code, args=args.__dict__)
         os.makedirs("logs/%s" % run_id, exist_ok=True)
         torch.save(log, "logs/%s/final.pt" % run_id)

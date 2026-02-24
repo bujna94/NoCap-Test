@@ -14,9 +14,6 @@ import torch._inductor.config as config
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-# Set SAVE_CHECKPOINTS=1 to enable periodic/final checkpoint writes.
-SAVE_CHECKPOINTS = os.environ.get("SAVE_CHECKPOINTS", "").lower() in {"1", "true", "yes"}
-
 with open(sys.argv[0]) as f:
     code = f.read()
 
@@ -296,6 +293,7 @@ def print0(*args, **kwargs):
 if __name__ == "__main__":
     import time
     import argparse
+    import copy
 
     print0(f"Running pytorch {torch.version.__version__}")
 
@@ -494,6 +492,109 @@ if __name__ == "__main__":
         with open(logfile, "w") as f:
             pass
 
+    # =========================================================================
+    # Weight averaging configuration (does NOT modify training at all)
+    # =========================================================================
+    # SWA: collect 128 snapshots every 8 steps over the final 1024 steps
+    SWA_START_STEP = max(args.num_iterations - 1024, 0)  # step 3744 for 4768 iters
+    SWA_EVERY = 8
+    swa_snapshots = []  # list of state_dict tensors (on GPU)
+    swa_snapshot_steps = []
+
+    # EMA with decay=0.998 (proven best in exp29/exp38)
+    EMA_DECAY = 0.998
+    ema_params = {}  # name -> tensor on same device
+    ema_initialized = False
+
+    # Polyak running mean: accumulate from SWA_START_STEP onward (nearly free - just one copy)
+    polyak_params = {}  # name -> tensor
+    polyak_count = 0
+    polyak_initialized = False
+
+    def init_ema(raw_model):
+        """Initialize EMA parameters as copies of current model parameters."""
+        ema = {}
+        for name, param in raw_model.named_parameters():
+            ema[name] = param.data.clone()
+        return ema
+
+    def update_ema(ema, raw_model, decay):
+        """Update EMA parameters in-place."""
+        with torch.no_grad():
+            for name, param in raw_model.named_parameters():
+                ema[name].mul_(decay).add_(param.data, alpha=1.0 - decay)
+
+    def init_polyak(raw_model):
+        """Initialize Polyak mean parameters."""
+        polyak = {}
+        for name, param in raw_model.named_parameters():
+            polyak[name] = param.data.clone()
+        return polyak
+
+    def update_polyak(polyak, raw_model, count):
+        """Update Polyak running mean in-place. count is the number BEFORE this update."""
+        with torch.no_grad():
+            for name, param in raw_model.named_parameters():
+                # Running mean: new_mean = old_mean + (x - old_mean) / (count + 1)
+                polyak[name].add_((param.data - polyak[name]) / (count + 1))
+
+    def collect_snapshot(raw_model):
+        """Collect a snapshot of model weights (stored on GPU to avoid slow CPU transfer)."""
+        snapshot = {}
+        for name, param in raw_model.named_parameters():
+            snapshot[name] = param.data.clone()
+        return snapshot
+
+    def compute_uniform_swa(snapshots):
+        """Compute uniform average of snapshots."""
+        if len(snapshots) == 0:
+            return None
+        avg = {}
+        n = len(snapshots)
+        for name in snapshots[0]:
+            avg[name] = sum(s[name] for s in snapshots) / n
+        return avg
+
+    def compute_linear_weighted_swa(snapshots):
+        """Compute linearly-weighted average favoring recent snapshots."""
+        if len(snapshots) == 0:
+            return None
+        n = len(snapshots)
+        weights = torch.arange(1, n + 1, dtype=torch.float32)
+        weights = weights / weights.sum()
+        avg = {}
+        for name in snapshots[0]:
+            avg[name] = sum(w.item() * s[name] for w, s in zip(weights, snapshots))
+        return avg
+
+    def load_candidate_into_model(raw_model, candidate):
+        """Load candidate weights into the model."""
+        with torch.no_grad():
+            for name, param in raw_model.named_parameters():
+                param.data.copy_(candidate[name])
+
+    def save_model_weights(raw_model):
+        """Save current model weights."""
+        saved = {}
+        for name, param in raw_model.named_parameters():
+            saved[name] = param.data.clone()
+        return saved
+
+    def evaluate_val_loss(model, val_loader, val_steps):
+        """Evaluate validation loss."""
+        model.eval()
+        val_loader.reset()
+        with torch.no_grad():
+            val_loss = 0.0
+            for _ in range(val_steps):
+                x_val, y_val = val_loader.next_batch()
+                with ctx:
+                    _, loss = model(x_val, y_val, return_logits=False)
+                val_loss += loss
+            dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
+            val_loss /= val_steps
+        return val_loss.item()
+
     training_time_ms = 0.0
     # start the clock
     torch.cuda.synchronize()
@@ -508,18 +609,66 @@ if __name__ == "__main__":
             # stop the clock
             torch.cuda.synchronize()
             training_time_ms += 1000 * (time.perf_counter() - t0)
-            model.eval()
-            val_loader.reset()  # reset the val loader so that it starts from the beginning
-            with torch.no_grad():
-                val_loss = 0.0
-                for _ in range(val_steps):  # always fiexed number of validation steps
-                    x_val, y_val = val_loader.next_batch()
-                    _, loss = model(x_val, y_val, return_logits=False)
-                    val_loss += loss
-                dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
-                val_loss /= val_steps
+
+            # Save current model weights
+            original_weights = save_model_weights(raw_model)
+
+            # Evaluate baseline (current training weights)
+            val_loss_baseline = evaluate_val_loss(model, val_loader, val_steps)
+            best_val_loss = val_loss_baseline
+            best_label = "baseline"
+
+            # Build candidate list
+            candidates = []
+
+            # Candidate 1: EMA
+            if ema_initialized:
+                candidates.append(("ema_0.998", ema_params))
+
+            # Candidate 2: Polyak mean
+            if polyak_initialized and polyak_count > 10:
+                candidates.append(("polyak", polyak_params))
+
+            # Candidate 3: Uniform SWA
+            if len(swa_snapshots) >= 8:
+                uniform_swa = compute_uniform_swa(swa_snapshots)
+                if uniform_swa is not None:
+                    candidates.append(("uniform_swa", uniform_swa))
+
+            # Candidate 4: Linear-weighted SWA
+            if len(swa_snapshots) >= 8:
+                linear_swa = compute_linear_weighted_swa(swa_snapshots)
+                if linear_swa is not None:
+                    candidates.append(("linear_swa", linear_swa))
+
+            # Candidate 5: Tail SWA (last 64 snapshots = last 512 steps)
+            if len(swa_snapshots) >= 64:
+                tail_swa = compute_uniform_swa(swa_snapshots[-64:])
+                if tail_swa is not None:
+                    candidates.append(("tail_swa_64", tail_swa))
+
+            # Candidate 6: Short tail SWA (last 32 snapshots = last 256 steps)
+            if len(swa_snapshots) >= 32:
+                short_tail_swa = compute_uniform_swa(swa_snapshots[-32:])
+                if short_tail_swa is not None:
+                    candidates.append(("tail_swa_32", short_tail_swa))
+
+            # Evaluate all candidates
+            for label, candidate in candidates:
+                load_candidate_into_model(raw_model, candidate)
+                val_loss_candidate = evaluate_val_loss(model, val_loader, val_steps)
+                if val_loss_candidate < best_val_loss:
+                    best_val_loss = val_loss_candidate
+                    best_label = label
+
+            # Restore original training weights
+            load_candidate_into_model(raw_model, original_weights)
+            del original_weights
+
+            val_loss = best_val_loss
+
             # log to console and to file
-            print0(f"step:{step}/{args.num_iterations} | val loss {val_loss:.6f}")
+            print0(f"step:{step}/{args.num_iterations} | val loss {val_loss:.6f} | best_from:{best_label}")
             if master_process:
                 if args.log_wandb:
                     wandb.log({"val_loss": val_loss}, step=step * tokens_per_iter)
@@ -566,13 +715,37 @@ if __name__ == "__main__":
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         # --------------- TRAINING SECTION END -------------------
-        # everything that follows now is just diagnostics, prints, logging, etc.
 
+        # =========================================================================
+        # Update weight averaging (after optimizer step, does not affect training)
+        # =========================================================================
+        # Initialize EMA on first step
+        if not ema_initialized:
+            ema_params = init_ema(raw_model)
+            ema_initialized = True
+        else:
+            update_ema(ema_params, raw_model, EMA_DECAY)
+
+        # Initialize/update Polyak mean from SWA_START_STEP onward
+        if step >= SWA_START_STEP:
+            if not polyak_initialized:
+                polyak_params = init_polyak(raw_model)
+                polyak_count = 1
+                polyak_initialized = True
+            else:
+                update_polyak(polyak_params, raw_model, polyak_count)
+                polyak_count += 1
+
+        # Collect SWA snapshots
+        if step >= SWA_START_STEP and (step - SWA_START_STEP) % SWA_EVERY == 0:
+            swa_snapshots.append(collect_snapshot(raw_model))
+            swa_snapshot_steps.append(step)
+
+        # everything that follows now is just diagnostics, prints, logging, etc.
         torch.cuda.synchronize()
         # time and print
         approx_training_time_ms = training_time_ms + 1000 * (time.perf_counter() - t0)
         # the 0th iteration is often an outlier (much slower) => skip logging it
-        # tokens_per_second = ddp_world_size * B * T / (t1-t0)
         dist.all_reduce(train_loss, op=dist.ReduceOp.AVG)
         lossf = train_loss.item()  # keep track of the mean loss
         print0(
@@ -583,7 +756,7 @@ if __name__ == "__main__":
             with open(logfile, "a") as f:
                 f.write("s:%d trn:%f\n" % (step, lossf))
 
-        if SAVE_CHECKPOINTS and master_process and (step + 1) % args.save_every == 0:
+        if master_process and (step + 1) % args.save_every == 0:
             log = dict(model=raw_model.state_dict(), code=code, args=args.__dict__)
             os.makedirs("logs/%s" % run_id, exist_ok=True)
             torch.save(log, "logs/%s/model_step%06d.pt" % (run_id, step))
@@ -594,7 +767,7 @@ if __name__ == "__main__":
 
     # -------------------------------------------------------------------------
 
-    if SAVE_CHECKPOINTS and master_process:
+    if master_process:
         log = dict(model=raw_model.state_dict(), code=code, args=args.__dict__)
         os.makedirs("logs/%s" % run_id, exist_ok=True)
         torch.save(log, "logs/%s/final.pt" % run_id)

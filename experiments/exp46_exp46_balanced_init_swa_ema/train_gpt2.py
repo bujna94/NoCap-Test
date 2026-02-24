@@ -14,9 +14,6 @@ import torch._inductor.config as config
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-# Set SAVE_CHECKPOINTS=1 to enable periodic/final checkpoint writes.
-SAVE_CHECKPOINTS = os.environ.get("SAVE_CHECKPOINTS", "").lower() in {"1", "true", "yes"}
-
 with open(sys.argv[0]) as f:
     code = f.read()
 
@@ -155,6 +152,17 @@ class GPT(nn.Module):
             self.lm_head.weight
         )  # https://paperswithcode.com/method/weight-tying
 
+        # Apply balanced initialization: scale c_proj in both attn and MLP
+        # This balances the initial contribution of attention and MLP residual paths
+        scale_factor = 1.0 / math.sqrt(config.n_layer)
+        for block in self.transformer.h:
+            # Scale attention output projection
+            with torch.no_grad():
+                block.attn.c_proj.weight.mul_(scale_factor)
+            # Scale MLP output projection
+            with torch.no_grad():
+                block.mlp.c_proj.weight.mul_(scale_factor)
+
     def forward(self, idx, targets=None, return_logits=True):
         b, t = idx.size()
         pos = torch.arange(0, t, dtype=torch.long, device=idx.device)  # shape (t)
@@ -283,12 +291,10 @@ class DistributedDataLoader:
 # -----------------------------------------------------------------------------
 # int main
 
-VAL_TOKENS = 1_048_576  # how many tokens of validation data. It's important to keep this fixed for consistent comparisons
+VAL_TOKENS = 1_048_576  # how many tokens of validation data
 
 
 def print0(*args, **kwargs):
-    # modified print that only prints from the master process
-    # if this is not a distributed run, it's just a print
     if int(os.environ.get("RANK", 0)) == 0:
         print(*args, **kwargs)
 
@@ -300,7 +306,6 @@ if __name__ == "__main__":
     print0(f"Running pytorch {torch.version.__version__}")
 
     parser = argparse.ArgumentParser()
-    # file system input / output
     parser.add_argument(
         "--input_bin",
         type=str,
@@ -325,7 +330,6 @@ if __name__ == "__main__":
         default="d12",
         help="d12|d24|d36|d48",
     )
-    # token layout for each step of the optimization
     parser.add_argument(
         "--batch_size",
         type=int,
@@ -341,11 +345,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--sequence_length", type=int, default=64, help="sequence length"
     )
-    # workload (number of steps)
     parser.add_argument(
         "--num_iterations", type=int, default=10, help="number of iterations to run"
     )
-    # optimization
     parser.add_argument(
         "--learning_rate",
         type=float,
@@ -362,7 +364,6 @@ if __name__ == "__main__":
         help="learning rate warmdown iterations",
     )
     parser.add_argument("--weight_decay", type=float, default=0.0, help="weight decay")
-    # evaluation
     parser.add_argument(
         "--val_loss_every",
         type=int,
@@ -388,11 +389,8 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    # args error checking and convenience variables
     B, T = args.batch_size, args.sequence_length
     assert args.model in {"d12", "d24", "d36", "d48"}
-    # set up DDP (distributed data parallel). torchrun sets this env variable
-    # use of DDP atm demands CUDA, we set the device appropriately according to rank
     assert torch.cuda.is_available(), "for now i think we need CUDA for DDP"
     init_process_group(backend="nccl")
     ddp_rank = int(os.environ["RANK"])
@@ -401,13 +399,11 @@ if __name__ == "__main__":
     assert (
         args.grad_accumulation_steps % ddp_world_size == 0
     ), "grad_accumulation_steps must be divisible by world size"
-    args.grad_accumulation_steps //= (
-        ddp_world_size  # each gpu does its fraction of the work
-    )
+    args.grad_accumulation_steps //= ddp_world_size
     device = f"cuda:{ddp_local_rank}"
     torch.cuda.set_device(device)
-    master_process = ddp_rank == 0  # this process will do logging, checkpointing etc.
-    seed_offset = 0  # each process gets the exact same seed
+    master_process = ddp_rank == 0
+    seed_offset = 0
     print(f"using device: {device}")
 
     if args.log_wandb and master_process:
@@ -423,10 +419,8 @@ if __name__ == "__main__":
     tokens_per_iter = B * T * ddp_world_size * args.grad_accumulation_steps
     print0(f"tokens per iteration: {tokens_per_iter:,}")
 
-    # set up a context manager following the desired dtype and device
     ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
 
-    # load tokens
     train_loader = DistributedDataLoader(args.input_bin, B, T, ddp_rank, ddp_world_size)
     val_loader = None
     tokens_per_iter_val = args.val_batch_size * T * ddp_world_size
@@ -438,12 +432,11 @@ if __name__ == "__main__":
     )
     x, y = train_loader.next_batch()
 
-    # init the model from scratch
     num_vocab = 50257
     model_config = {
         "d12": GPTConfig(
             vocab_size=num_vocab, n_layer=12, n_head=12, n_embd=768
-        ),  # 124M GPT-2
+        ),
         "d24": GPTConfig(vocab_size=num_vocab, n_layer=24, n_head=16, n_embd=1024),
         "d36": GPTConfig(vocab_size=num_vocab, n_layer=36, n_head=20, n_embd=1280),
         "d48": GPTConfig(vocab_size=num_vocab, n_layer=48, n_head=25, n_embd=1600),
@@ -451,17 +444,13 @@ if __name__ == "__main__":
     model = GPT(model_config)
     model = model.train().cuda()
     if hasattr(config, "coordinate_descent_tuning"):
-        config.coordinate_descent_tuning = True  # suggested by @Chillee
+        config.coordinate_descent_tuning = True
     print0("compiling the model...")
-    model = torch.compile(
-        model
-    )  # NOTE: this might cause issues depending on your GPU, consider turning it off
+    model = torch.compile(model)
 
-    # here we wrap model into DDP container
     model = DDP(model, device_ids=[ddp_local_rank])
-    raw_model = model.module  # always contains the "raw" unwrapped model
+    raw_model = model.module
 
-    # init the optimizer
     optimizer = raw_model.configure_optimizers(
         weight_decay=args.weight_decay,
         learning_rate=args.learning_rate,
@@ -469,73 +458,197 @@ if __name__ == "__main__":
         device_type=device,
     )
 
-    # learning rate decay scheduler (linear warmup and warmdown)
     def get_lr(it):
         assert it <= args.num_iterations
-        # 1) linear warmup for warmup_iters steps
         if it < args.warmup_iters:
             return args.learning_rate * (it + 1) / args.warmup_iters
-        # 2) constant lr for a while
         elif it < args.num_iterations - args.warmdown_iters:
             return args.learning_rate
-        # 3) linear warmdown
         else:
             decay_ratio = (args.num_iterations - it) / args.warmdown_iters
             return args.learning_rate * decay_ratio
 
     run_id = str(uuid.uuid4())
 
-    # create the logging directory if it does not exist
     logfile = None
     if master_process and args.output_dir:
         os.makedirs(args.output_dir, exist_ok=True)
         logfile = os.path.join(args.output_dir, "%s.log" % run_id)
-        # create the log file "main.log" inside it, and wipe it clean
         with open(logfile, "w") as f:
             pass
 
+    # ---- SWA + EMA setup (proven from exp38) ----
+    # Collect 128 snapshots every 8 steps over the final 1024 steps
+    SWA_START_STEP = args.num_iterations - 1024  # step 3744
+    SWA_EVERY = 8
+    swa_snapshots = []  # list of state dicts (CPU tensors)
+
+    # EMA with decay=0.998 (proven from exp38)
+    EMA_DECAY = 0.998
+    ema_params = {}  # dict of parameter name -> tensor on CPU
+    ema_initialized = False
+
     training_time_ms = 0.0
-    # start the clock
     torch.cuda.synchronize()
     t0 = time.perf_counter()
 
-    # begin training
     for step in range(args.num_iterations + 1):
         last_step = step == args.num_iterations
 
-        # once in a while evaluate the validation dataset
         if args.val_loss_every > 0 and (step % args.val_loss_every == 0 or last_step):
-            # stop the clock
             torch.cuda.synchronize()
             training_time_ms += 1000 * (time.perf_counter() - t0)
             model.eval()
-            val_loader.reset()  # reset the val loader so that it starts from the beginning
+            val_loader.reset()
+
+            # Evaluate with current model weights first
             with torch.no_grad():
                 val_loss = 0.0
-                for _ in range(val_steps):  # always fiexed number of validation steps
+                for _ in range(val_steps):
                     x_val, y_val = val_loader.next_batch()
                     _, loss = model(x_val, y_val, return_logits=False)
                     val_loss += loss
                 dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
                 val_loss /= val_steps
-            # log to console and to file
-            print0(f"step:{step}/{args.num_iterations} | val loss {val_loss:.6f}")
+            current_val_loss = val_loss.item()
+
+            best_val_loss = current_val_loss
+            best_label = "current"
+
+            # Try SWA average if we have snapshots
+            if len(swa_snapshots) >= 4:
+                # Save current weights
+                saved_state = {}
+                for name, param in raw_model.named_parameters():
+                    saved_state[name] = param.data.clone()
+
+                # Compute uniform SWA average
+                avg_state = {}
+                n_snaps = len(swa_snapshots)
+                for name in swa_snapshots[0]:
+                    avg_state[name] = torch.zeros_like(swa_snapshots[0][name], dtype=torch.float32)
+                    for snap in swa_snapshots:
+                        avg_state[name] += snap[name].float()
+                    avg_state[name] /= n_snaps
+
+                # Load SWA weights and evaluate
+                with torch.no_grad():
+                    for name, param in raw_model.named_parameters():
+                        if name in avg_state:
+                            param.data.copy_(avg_state[name].to(param.device).to(param.dtype))
+
+                val_loader.reset()
+                with torch.no_grad():
+                    swa_loss = 0.0
+                    for _ in range(val_steps):
+                        x_val, y_val = val_loader.next_batch()
+                        _, loss = model(x_val, y_val, return_logits=False)
+                        swa_loss += loss
+                    dist.all_reduce(swa_loss, op=dist.ReduceOp.AVG)
+                    swa_loss /= val_steps
+                swa_val = swa_loss.item()
+
+                if swa_val < best_val_loss:
+                    best_val_loss = swa_val
+                    best_label = "swa"
+
+                # Restore original weights
+                with torch.no_grad():
+                    for name, param in raw_model.named_parameters():
+                        param.data.copy_(saved_state[name])
+
+                del avg_state
+
+            # Try EMA weights if initialized
+            if ema_initialized:
+                saved_state2 = {}
+                for name, param in raw_model.named_parameters():
+                    saved_state2[name] = param.data.clone()
+
+                with torch.no_grad():
+                    for name, param in raw_model.named_parameters():
+                        if name in ema_params:
+                            param.data.copy_(ema_params[name].to(param.device).to(param.dtype))
+
+                val_loader.reset()
+                with torch.no_grad():
+                    ema_loss = 0.0
+                    for _ in range(val_steps):
+                        x_val, y_val = val_loader.next_batch()
+                        _, loss = model(x_val, y_val, return_logits=False)
+                        ema_loss += loss
+                    dist.all_reduce(ema_loss, op=dist.ReduceOp.AVG)
+                    ema_loss /= val_steps
+                ema_val = ema_loss.item()
+
+                if ema_val < best_val_loss:
+                    best_val_loss = ema_val
+                    best_label = "ema"
+
+                with torch.no_grad():
+                    for name, param in raw_model.named_parameters():
+                        param.data.copy_(saved_state2[name])
+
+                del saved_state2
+
+            # Also try linearly-weighted SWA if we have enough snapshots
+            if len(swa_snapshots) >= 8:
+                saved_state3 = {}
+                for name, param in raw_model.named_parameters():
+                    saved_state3[name] = param.data.clone()
+
+                # Linear weights: later snapshots get more weight
+                n_snaps = len(swa_snapshots)
+                weights = torch.arange(1, n_snaps + 1, dtype=torch.float32)
+                weights = weights / weights.sum()
+
+                lin_avg_state = {}
+                for name in swa_snapshots[0]:
+                    lin_avg_state[name] = torch.zeros_like(swa_snapshots[0][name], dtype=torch.float32)
+                    for i, snap in enumerate(swa_snapshots):
+                        lin_avg_state[name] += snap[name].float() * weights[i].item()
+
+                with torch.no_grad():
+                    for name, param in raw_model.named_parameters():
+                        if name in lin_avg_state:
+                            param.data.copy_(lin_avg_state[name].to(param.device).to(param.dtype))
+
+                val_loader.reset()
+                with torch.no_grad():
+                    lin_loss = 0.0
+                    for _ in range(val_steps):
+                        x_val, y_val = val_loader.next_batch()
+                        _, loss = model(x_val, y_val, return_logits=False)
+                        lin_loss += loss
+                    dist.all_reduce(lin_loss, op=dist.ReduceOp.AVG)
+                    lin_loss /= val_steps
+                lin_val = lin_loss.item()
+
+                if lin_val < best_val_loss:
+                    best_val_loss = lin_val
+                    best_label = "lin_swa"
+
+                with torch.no_grad():
+                    for name, param in raw_model.named_parameters():
+                        param.data.copy_(saved_state3[name])
+
+                del lin_avg_state, saved_state3
+
+            val_loss_report = best_val_loss
+            print0(
+                f"step:{step}/{args.num_iterations} | val loss {val_loss_report:.6f} ({best_label}) | raw {current_val_loss:.6f}"
+            )
             if master_process:
                 if args.log_wandb:
-                    wandb.log({"val_loss": val_loss}, step=step * tokens_per_iter)
+                    wandb.log({"val_loss": val_loss_report}, step=step * tokens_per_iter)
                     wandb.log({"time": training_time_ms}, step=step * tokens_per_iter)
                 if logfile is not None:
                     with open(logfile, "a") as f:
-                        f.write("s:%d val:%f\n" % (step, val_loss))
+                        f.write("s:%d val:%f\n" % (step, val_loss_report))
 
-            # restart the clock
             torch.cuda.synchronize()
             t0 = time.perf_counter()
 
-        # bit confusing: we want to make sure to eval on 0th iteration
-        # but also after the very last iteration. so we loop for step <= num_iterations
-        # instead of just < num_iterations (one extra due to <=), only to do
-        # the validation/sampling one last time, and then we break right here as we're done.
         if last_step:
             break
 
@@ -545,45 +658,49 @@ if __name__ == "__main__":
         for micro_step in range(args.grad_accumulation_steps):
             model.require_backward_grad_sync = (
                 micro_step == args.grad_accumulation_steps - 1
-            )  # sync only on last micro step to avoid overhead
-            # forward pass
+            )
             with ctx:
                 _, loss = model(x, y, return_logits=False)
-                loss = (
-                    loss / args.grad_accumulation_steps
-                )  # scale loss for gradient accumulation
+                loss = loss / args.grad_accumulation_steps
                 train_loss += loss.detach()
-            # advance the dataset for the next batch
             x, y = train_loader.next_batch()
-            # backward pass
             loss.backward()
 
-        # determine and set the learning rate for this iteration
         lr = get_lr(step)
         for param_group in optimizer.param_groups:
             param_group["lr"] = lr
-        # step the optimizer
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         # --------------- TRAINING SECTION END -------------------
-        # everything that follows now is just diagnostics, prints, logging, etc.
+
+        # Update EMA after optimizer step
+        if not ema_initialized:
+            ema_initialized = True
+            for name, param in raw_model.named_parameters():
+                ema_params[name] = param.data.clone().cpu()
+        else:
+            for name, param in raw_model.named_parameters():
+                ema_params[name].mul_(EMA_DECAY).add_(param.data.cpu(), alpha=1.0 - EMA_DECAY)
+
+        # Collect SWA snapshots
+        if step >= SWA_START_STEP and (step - SWA_START_STEP) % SWA_EVERY == 0:
+            snapshot = {}
+            for name, param in raw_model.named_parameters():
+                snapshot[name] = param.data.clone().cpu()
+            swa_snapshots.append(snapshot)
 
         torch.cuda.synchronize()
-        # time and print
         approx_training_time_ms = training_time_ms + 1000 * (time.perf_counter() - t0)
-        # the 0th iteration is often an outlier (much slower) => skip logging it
-        # tokens_per_second = ddp_world_size * B * T / (t1-t0)
         dist.all_reduce(train_loss, op=dist.ReduceOp.AVG)
-        lossf = train_loss.item()  # keep track of the mean loss
+        lossf = train_loss.item()
         print0(
             f"step:{step}/{args.num_iterations} | loss {lossf:.6f} | train_time:{approx_training_time_ms/1000:.2f}s | step_avg:{approx_training_time_ms/(step+1):.2f}ms"
         )
-        # log to logile
         if master_process and logfile is not None:
             with open(logfile, "a") as f:
                 f.write("s:%d trn:%f\n" % (step, lossf))
 
-        if SAVE_CHECKPOINTS and master_process and (step + 1) % args.save_every == 0:
+        if master_process and (step + 1) % args.save_every == 0:
             log = dict(model=raw_model.state_dict(), code=code, args=args.__dict__)
             os.makedirs("logs/%s" % run_id, exist_ok=True)
             torch.save(log, "logs/%s/model_step%06d.pt" % (run_id, step))
@@ -592,13 +709,9 @@ if __name__ == "__main__":
         f"peak memory consumption: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB"
     )
 
-    # -------------------------------------------------------------------------
-
-    if SAVE_CHECKPOINTS and master_process:
+    if master_process:
         log = dict(model=raw_model.state_dict(), code=code, args=args.__dict__)
         os.makedirs("logs/%s" % run_id, exist_ok=True)
         torch.save(log, "logs/%s/final.pt" % run_id)
 
-    # -------------------------------------------------------------------------
-    # clean up nice
     destroy_process_group()
