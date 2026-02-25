@@ -29,6 +29,8 @@ EXPERIMENTS_JSON = PROJECT_ROOT / "experiments.json"
 EXPERIMENTS_DIR = PROJECT_ROOT / "experiments"
 IDEA_MD = PROJECT_ROOT / "IDEA.md"
 TARGET_VAL_LOSS = 3.3821
+ULTRA_TARGET_HOURS = 3.88
+ULTRA_TARGET_SECONDS = ULTRA_TARGET_HOURS * 3600
 CLAUDE_MODEL = "claude-opus-4-6"  # most capable for novel research ideas
 # By default, do not persist LLM prompt/response archives to disk.
 SAVE_LLM_IO_LOGS = os.environ.get("SAVE_LLM_IO_LOGS", "").lower() in {"1", "true", "yes"}
@@ -213,6 +215,7 @@ def get_experiment_summary():
     lines = []
     lines.append(f"Target val loss: {data['target_val_loss']}")
     lines.append(f"Baseline time: {data.get('baseline_time_seconds', 'unknown')}s")
+    lines.append(f"Ultra target time: {ULTRA_TARGET_SECONDS:.0f}s ({ULTRA_TARGET_HOURS:.2f}h)")
     lines.append("")
 
     baseline_time = data.get("baseline_time_seconds")
@@ -222,6 +225,7 @@ def get_experiment_summary():
         val = exp.get("final_val_loss", "N/A")
         time_s = exp.get("total_time_seconds", "N/A")
         success = exp.get("success", False)
+        ultra = exp.get("ultra_success", False)
         partial = exp.get("partial_success", False)
         findings = exp.get("key_findings", "")
         desc = exp.get("description", "")
@@ -229,8 +233,11 @@ def get_experiment_summary():
         val_ok = val != "N/A" and val is not None and val <= TARGET_VAL_LOSS
         time_ok = (time_s != "N/A" and time_s is not None and baseline_time is not None
                    and time_s < baseline_time)
+        ultra_time_ok = (time_s != "N/A" and time_s is not None and time_s < ULTRA_TARGET_SECONDS)
 
-        if success:
+        if ultra:
+            outcome = "ULTRA SUCCESS (val loss + under 3.88h)"
+        elif success:
             outcome = "FULL SUCCESS (val loss + faster than baseline)"
         elif partial:
             parts = []
@@ -238,6 +245,8 @@ def get_experiment_summary():
                 parts.append("val loss OK")
             if time_ok:
                 parts.append("faster than baseline")
+            if ultra_time_ok:
+                parts.append("under 3.88h")
             outcome = f"PARTIAL ({', '.join(parts)} — but not both)"
         else:
             outcome = "not achieved"
@@ -248,6 +257,8 @@ def get_experiment_summary():
             lines.append(f"  Delta to target: {val - TARGET_VAL_LOSS:+.6f}")
         if isinstance(time_s, (int, float)) and baseline_time:
             lines.append(f"  Speedup vs baseline: {(1 - time_s / baseline_time) * 100:+.3f}%")
+        if isinstance(time_s, (int, float)):
+            lines.append(f"  Delta to 3.88h target (s): {time_s - ULTRA_TARGET_SECONDS:+.2f}")
         lines.append(f"  Hypothesis: {desc}")
         if findings:
             lines.append(f"  Findings: {findings}")
@@ -386,6 +397,10 @@ def call_claude_for_experiment(llm, exp_num, feedback=""):
 ## Goal
 Reach validation loss ≤ {TARGET_VAL_LOSS} on FineWeb faster than the baseline.
 "Faster" means reaching the SAME val loss in FEWER steps or LESS wall-clock time.
+Track two outcomes:
+- FULL SUCCESS: beats your local baseline runtime while meeting val target.
+- ULTRA SUCCESS: meets val target and total runtime < {ULTRA_TARGET_HOURS:.2f} hours.
+ULTRA SUCCESS is the highest-priority objective. If there is any tradeoff, prefer choices that increase odds of ULTRA SUCCESS over baseline-only wins.
 
 ## Rules (from the competition)
 - Focus on NOVEL algorithmic ideas that could scale
@@ -584,8 +599,11 @@ def enrich_experiment_outcome(exp_name):
         tm = exp.get("total_time_seconds")
         val_ok = val is not None and val <= TARGET_VAL_LOSS
         time_ok = baseline_time is not None and tm is not None and tm < baseline_time
+        ultra_time_ok = tm is not None and tm < ULTRA_TARGET_SECONDS
         exp["val_target_met"] = val_ok
         exp["faster_than_baseline"] = time_ok
+        exp["faster_than_ultra_target"] = ultra_time_ok
+        exp["delta_to_ultra_target_seconds"] = (tm - ULTRA_TARGET_SECONDS) if tm is not None else None
         exp["delta_to_target"] = (val - TARGET_VAL_LOSS) if val is not None else None
         exp["speedup_pct"] = ((1 - (tm / baseline_time)) * 100) if (tm is not None and baseline_time) else None
         break
@@ -610,6 +628,7 @@ def self_critique_and_revise(llm, exp_data, exp_num):
     """Ask the model to critique and revise its own proposal toward full success."""
     critique_prompt = f"""You proposed experiment #{exp_num}. Critique it against the requirement:
 - Must target BOTH: (1) val_loss <= {TARGET_VAL_LOSS} and (2) faster-than-baseline time.
+- ULTRA target has priority: maximize chance of ULTRA SUCCESS with total runtime < {ULTRA_TARGET_HOURS:.2f} hours.
 
 Return ONLY revised JSON in the same schema as before.
 Do not include markdown.
@@ -647,7 +666,12 @@ def update_idea_md(exp_result, baseline_time):
 
     val_loss = exp_result.get("final_val_loss")
     total_time = exp_result.get("total_time_seconds")
-    outcome = "FULL SUCCESS (val + speed)" if exp_result.get("success") else "PARTIAL SUCCESS (val-only)"
+    if exp_result.get("ultra_success"):
+        outcome = f"ULTRA SUCCESS (val + under {ULTRA_TARGET_HOURS:.2f}h)"
+    elif exp_result.get("success"):
+        outcome = "FULL SUCCESS (val + speed)"
+    else:
+        outcome = "PARTIAL SUCCESS (val-only)"
     speedup = None
     if baseline_time and total_time:
         speedup = (1 - (total_time / baseline_time)) * 100
@@ -661,6 +685,7 @@ def update_idea_md(exp_result, baseline_time):
         f"- Final val loss: {val_loss}",
         f"- Total time (s): {total_time}",
         f"- Baseline time (s): {baseline_time}",
+        f"- Ultra target time (s): {ULTRA_TARGET_SECONDS:.0f}",
         f"- Speedup vs baseline: {f'{speedup:+.3f}%' if speedup is not None else 'N/A'}",
         f"- Description: {exp_result.get('description', '')}",
         f"- Key findings: {exp_result.get('key_findings', '')}",
@@ -746,6 +771,7 @@ def main():
     print("=" * 60)
     print(f"  LLM:    {provider_label} ({model_label})")
     print(f"  Target: val_loss ≤ {TARGET_VAL_LOSS}")
+    print(f"  Ultra:  val_loss ≤ {TARGET_VAL_LOSS} and time < {ULTRA_TARGET_HOURS:.2f}h")
     print(f"  Dashboard: http://localhost:8080/dashboard/index.html")
     print(f"  Save LLM I/O logs: {'ON' if SAVE_LLM_IO_LOGS else 'OFF'} (set SAVE_LLM_IO_LOGS=1 to enable)")
     print("=" * 60)
@@ -883,6 +909,7 @@ Please provide the COMPLETE fixed training script. Respond with ONLY the Python 
                 "peak_memory_mib": None,
                 "final_val_loss": None,
                 "success": False,
+                "ultra_success": False,
                 "val_loss_history": [],
                 "train_loss_history": [],
                 "log_file": "",
@@ -924,7 +951,17 @@ Please provide the COMPLETE fixed training script. Respond with ONLY the Python 
             baseline_time = data.get("baseline_time_seconds", 0)
             exp_time = exp_result.get("total_time_seconds", 0)
             speedup = ((1 - exp_time / baseline_time) * 100) if baseline_time else 0
-            if exp_result.get("success"):
+            ultra_speedup = ((1 - exp_time / ULTRA_TARGET_SECONDS) * 100) if exp_time else 0
+            if exp_result.get("ultra_success"):
+                print(f"\n{'=' * 60}")
+                print(f"  ULTRA SUCCESS! {exp_name} beat val target and 3.88h!")
+                print(f"  Val loss: {exp_result['final_val_loss']:.6f} (target: {TARGET_VAL_LOSS})")
+                print(f"  Time: {exp_time:.1f}s vs 3.88h ({ULTRA_TARGET_SECONDS:.1f}s, {ultra_speedup:+.1f}%)")
+                if baseline_time:
+                    print(f"  Also vs baseline {baseline_time:.1f}s ({speedup:+.1f}%)")
+                print(f"{'=' * 60}\n")
+                update_idea_md(exp_result, baseline_time)
+            elif exp_result.get("success"):
                 print(f"\n{'=' * 60}")
                 print(f"  FULL SUCCESS! {exp_name} beat BOTH targets!")
                 print(f"  Val loss: {exp_result['final_val_loss']:.6f} (target: {TARGET_VAL_LOSS})")

@@ -9,7 +9,7 @@
   :root {
     --bg: #0d1117; --surface: #161b22; --border: #30363d;
     --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
-    --green: #3fb950; --red: #f85149; --yellow: #d29922; --purple: #bc8cff;
+    --green: #3fb950; --red: #f85149; --yellow: #d29922; --purple: #bc8cff; --orange: #ff9f1c;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace; background: var(--bg); color: var(--text); padding: 20px; }
@@ -52,10 +52,13 @@
   .exp-card .name { font-weight: bold; font-size: 1.05em; overflow-wrap: break-word; word-break: break-word; min-width: 0; flex: 1; }
   .badge { padding: 2px 8px; border-radius: 12px; font-size: 0.75em; font-weight: bold; text-transform: uppercase; }
   .badge.running { background: rgba(210,153,34,0.2); color: var(--yellow); animation: pulse 2s infinite; }
+  .badge.stale { background: rgba(139,148,158,0.2); color: var(--muted); }
   .badge.completed { background: rgba(63,185,80,0.2); color: var(--green); }
+  .badge.ultra { background: rgba(255,159,28,0.22); color: var(--orange); }
   .badge.partial { background: rgba(188,140,255,0.2); color: var(--purple); }
   .badge.failed { background: rgba(248,81,73,0.2); color: var(--red); }
   .badge.pending { background: rgba(139,148,158,0.2); color: var(--muted); }
+  .exp-card.success-ultra { border-color: var(--orange); box-shadow: 0 0 0 1px rgba(255,159,28,0.35) inset; }
   .exp-card.success-full { border-color: var(--green); }
   .exp-card.success-partial { border-color: var(--purple); }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
@@ -92,7 +95,7 @@
 <div class="header">
   <div class="header-left">
     <h1><span>GPT-2</span> Training Speedup Experiments</h1>
-    <div class="target-badge">Success: val loss <strong>&le; 3.3821</strong> &amp; faster than baseline &nbsp;|&nbsp; Partial: either one</div>
+    <div class="target-badge">Ultra: val loss <strong>&le; 3.3821</strong> &amp; time <strong>3.88h</strong> &nbsp;|&nbsp; Success: faster than baseline</div>
   </div>
   <div class="header-right">
     <div class="refresh-indicator" id="refresh-status">Auto-refresh: 10s</div>
@@ -120,6 +123,8 @@ let data = null;
 let sysData = null;
 let firstLoad = true;
 const openDetails = new Set();  // track which experiment details are open
+const ULTRA_TARGET_HOURS = 3.88;
+const ULTRA_TARGET_SECONDS = ULTRA_TARGET_HOURS * 3600;
 
 async function fetchData() {
   try {
@@ -185,37 +190,63 @@ function getOutcome(exp, baselineTime) {
   if (exp.status !== 'completed' || exp.name === 'exp0_baseline') return 'none';
   const valOk = exp.final_val_loss != null && exp.final_val_loss <= data.target_val_loss;
   const timeOk = exp.total_time_seconds != null && baselineTime != null && exp.total_time_seconds < baselineTime;
+  const ultraTimeOk = exp.total_time_seconds != null && exp.total_time_seconds < ULTRA_TARGET_SECONDS;
+  if (exp.ultra_success === true || (valOk && ultraTimeOk)) return 'ultra';
   if (valOk && timeOk) return 'full';
   if (valOk) return 'partial';
   return 'none';
+}
+
+function getRunningState(exps) {
+  const running = exps.filter(e => e.status === 'running');
+  if (running.length === 0) return { activeNames: new Set(), staleNames: new Set() };
+  // Single-GPU harness runs one experiment at a time. Keep the newest as active.
+  const sorted = [...running].sort((a, b) => {
+    const ta = a.start_time ? Date.parse(a.start_time) : 0;
+    const tb = b.start_time ? Date.parse(b.start_time) : 0;
+    return tb - ta;
+  });
+  const activeNames = new Set([sorted[0].name]);
+  const staleNames = new Set(sorted.slice(1).map(e => e.name));
+  return { activeNames, staleNames };
 }
 
 function renderStats() {
   const el = document.getElementById('stats');
   const exps = data.experiments || [];
   const baselineTime = data.baseline_time_seconds;
+  const runningState = getRunningState(exps);
   const total = exps.length;
   const completed = exps.filter(e => e.status === 'completed').length;
   const failed = exps.filter(e => e.status === 'failed').length;
-  const running = exps.filter(e => e.status === 'running').length;
+  const running = runningState.activeNames.size;
+  const staleRunning = runningState.staleNames.size;
   const fullSuccesses = exps.filter(e => getOutcome(e, baselineTime) === 'full').length;
+  const ultraSuccesses = exps.filter(e => getOutcome(e, baselineTime) === 'ultra').length;
   const partialSuccesses = exps.filter(e => getOutcome(e, baselineTime) === 'partial').length;
 
   const completedExps = exps.filter(e => e.status === 'completed' && e.final_val_loss != null);
   const bestLoss = completedExps.length > 0 ? Math.min(...completedExps.map(e => e.final_val_loss)) : null;
 
-  const fastestFull = exps.filter(e => getOutcome(e, baselineTime) === 'full' && e.total_time_seconds)
+  const fastestUltra = exps.filter(e => getOutcome(e, baselineTime) === 'ultra' && e.total_time_seconds)
+    .sort((a,b) => a.total_time_seconds - b.total_time_seconds)[0];
+
+  const fastestFull = exps.filter(e => (getOutcome(e, baselineTime) === 'full' || getOutcome(e, baselineTime) === 'ultra') && e.total_time_seconds)
     .sort((a,b) => a.total_time_seconds - b.total_time_seconds)[0];
 
   el.innerHTML = `
     <div class="stat-card"><div class="label">Total Attempts</div><div class="value accent">${total}</div></div>
     <div class="stat-card"><div class="label">Running</div><div class="value yellow">${running}</div></div>
+    <div class="stat-card"><div class="label">Stale Running</div><div class="value">${staleRunning}</div><div class="sub">ghost rows</div></div>
     <div class="stat-card"><div class="label">Completed</div><div class="value">${completed}</div></div>
+    <div class="stat-card"><div class="label">Ultra Success</div><div class="value" style="color:var(--orange)">${ultraSuccesses}</div><div class="sub">val + under 3.88h</div></div>
     <div class="stat-card"><div class="label">Full Success</div><div class="value green">${fullSuccesses}</div><div class="sub">val + speed</div></div>
     <div class="stat-card"><div class="label">Partial Success</div><div class="value" style="color:var(--purple)">${partialSuccesses}</div><div class="sub">val loss only</div></div>
     <div class="stat-card"><div class="label">Failures</div><div class="value red">${failed}</div></div>
     <div class="stat-card"><div class="label">Best Val Loss</div><div class="value ${bestLoss && bestLoss <= data.target_val_loss ? 'green' : ''}">${bestLoss != null ? bestLoss.toFixed(4) : '-'}</div></div>
     <div class="stat-card"><div class="label">Baseline Time</div><div class="value">${formatTime(baselineTime)}</div></div>
+    <div class="stat-card"><div class="label">Ultra Target</div><div class="value">${formatTime(ULTRA_TARGET_SECONDS)}</div></div>
+    <div class="stat-card"><div class="label">Best Ultra Time</div><div class="value ${fastestUltra ? 'accent' : ''}">${fastestUltra ? formatTime(fastestUltra.total_time_seconds) : '-'}</div></div>
     <div class="stat-card"><div class="label">Best Speedup</div><div class="value ${fastestFull && baselineTime ? 'green' : ''}">${fastestFull && baselineTime ? ((1 - fastestFull.total_time_seconds / baselineTime) * 100).toFixed(1) + '%' : '-'}</div></div>
   `;
 }
@@ -289,12 +320,14 @@ function renderExperiments() {
   noData.style.display = 'none';
 
   const reversed = [...exps].reverse();
+  const runningState = getRunningState(exps);
   el.innerHTML = reversed.map((exp) => {
     const i = exps.indexOf(exp);
     const baselineTime = data.baseline_time_seconds;
     const outcome = getOutcome(exp, baselineTime);
     const valOk = exp.final_val_loss != null && exp.final_val_loss <= data.target_val_loss;
     const timeOk = exp.total_time_seconds != null && baselineTime != null && exp.total_time_seconds < baselineTime;
+    const ultraTimeOk = exp.total_time_seconds != null && exp.total_time_seconds < ULTRA_TARGET_SECONDS;
 
     let speedupHtml = '';
     if (exp.total_time_seconds && baselineTime && exp.name !== 'exp0_baseline') {
@@ -339,15 +372,17 @@ function renderExperiments() {
 
     // Badge: running/failed use status; completed use outcome
     let badgeClass, badgeText;
-    if (exp.status === 'running') { badgeClass = 'running'; badgeText = 'running'; }
+    if (exp.status === 'running' && runningState.activeNames.has(exp.name)) { badgeClass = 'running'; badgeText = 'running'; }
+    else if (exp.status === 'running' && runningState.staleNames.has(exp.name)) { badgeClass = 'stale'; badgeText = 'stale'; }
     else if (exp.status === 'failed') { badgeClass = 'failed'; badgeText = 'failed'; }
+    else if (outcome === 'ultra') { badgeClass = 'ultra'; badgeText = 'ultra success'; }
     else if (outcome === 'full') { badgeClass = 'completed'; badgeText = 'success'; }
     else if (outcome === 'partial') {
       badgeClass = 'partial';
       badgeText = 'partial (val)';
     } else { badgeClass = 'pending'; badgeText = exp.status; }
 
-    const cardClass = outcome === 'full' ? 'success-full' : outcome === 'partial' ? 'success-partial' : '';
+    const cardClass = outcome === 'ultra' ? 'success-ultra' : outcome === 'full' ? 'success-full' : outcome === 'partial' ? 'success-partial' : '';
 
     return `
       <div class="exp-card ${cardClass}">
@@ -359,7 +394,7 @@ function renderExperiments() {
         <div class="metrics">
           <div class="metric"><span class="mlabel">Steps</span><span class="mvalue">${lastStep}/${totalSteps}</span></div>
           <div class="metric"><span class="mlabel">Val Loss</span><span class="mvalue" style="color:${valOk ? 'var(--green)' : 'var(--text)'}">${exp.final_val_loss != null ? exp.final_val_loss.toFixed(4) : '-'}${valOk ? ' ✓' : ''}</span></div>
-          <div class="metric"><span class="mlabel">Time</span><span class="mvalue" style="color:${timeOk ? 'var(--green)' : 'var(--text)'}">${formatTime(exp.total_time_seconds)}${timeOk ? ' ✓' : ''}</span></div>
+          <div class="metric"><span class="mlabel">Time</span><span class="mvalue" style="color:${ultraTimeOk ? 'var(--orange)' : (timeOk ? 'var(--green)' : 'var(--text)')}">${formatTime(exp.total_time_seconds)}${ultraTimeOk ? ' ★' : (timeOk ? ' ✓' : '')}</span></div>
           <div class="metric"><span class="mlabel">GPU Mem</span><span class="mvalue">${gpuMemStr}</span></div>
           <div class="metric"><span class="mlabel">Avg Step</span><span class="mvalue">${avgStepTime}</span></div>
           ${speedupHtml}

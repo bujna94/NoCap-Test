@@ -20,6 +20,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.resolve()
 EXPERIMENTS_JSON = PROJECT_ROOT / "experiments.json"
 TARGET_VAL_LOSS = 3.3821
+ULTRA_TARGET_HOURS = 3.88
+ULTRA_TARGET_SECONDS = ULTRA_TARGET_HOURS * 3600
 
 
 def load_experiments():
@@ -133,6 +135,19 @@ def main():
 
     # Register experiment
     data = load_experiments()
+    now_iso = datetime.now().isoformat()
+    # This harness is intended for single-GPU sequential runs; mark older "running"
+    # rows as stale so the dashboard does not show ghost active jobs after crashes.
+    for exp in data["experiments"]:
+        if exp.get("status") == "running" and exp.get("name") != args.name:
+            exp["status"] = "failed"
+            exp["end_time"] = now_iso
+            exp["success"] = False
+            exp["partial_success"] = False
+            exp["ultra_success"] = False
+            prior = (exp.get("key_findings") or "").strip()
+            stale_note = "Marked stale when a newer run started."
+            exp["key_findings"] = f"{prior} {stale_note}".strip()
     # Remove existing entry with same name if re-running
     data["experiments"] = [e for e in data["experiments"] if e["name"] != args.name]
     data["experiments"].append({
@@ -140,13 +155,14 @@ def main():
         "display_name": args.display_name or args.name,
         "description": args.description,
         "status": "running",
-        "start_time": datetime.now().isoformat(),
+        "start_time": now_iso,
         "end_time": None,
         "total_time_seconds": None,
         "total_steps": 4768,
         "peak_memory_mib": None,
         "final_val_loss": None,
         "success": None,
+        "ultra_success": None,
         "val_loss_history": [],
         "train_loss_history": [],
         "log_file": str(log_path.relative_to(PROJECT_ROOT)),
@@ -196,19 +212,25 @@ def main():
     time_ok = (parsed["total_time_seconds"] is not None
                and baseline_time is not None
                and parsed["total_time_seconds"] < baseline_time)
+    ultra_time_ok = (parsed["total_time_seconds"] is not None
+                     and parsed["total_time_seconds"] < ULTRA_TARGET_SECONDS)
 
     if args.name == "exp0_baseline":
         # Baseline only checks val loss (nothing to compare speed against)
         success = val_loss_ok
         partial_success = False
+        ultra_success = False
     elif status != "completed":
         success = False
         partial_success = False
+        ultra_success = False
     else:
         # Full success: beats BOTH val loss target AND baseline speed
         success = val_loss_ok and time_ok
         # Partial: val loss achieved but not faster than baseline
         partial_success = val_loss_ok and not success
+        # Ultra success: beats val target and 3.88h leaderboard threshold
+        ultra_success = val_loss_ok and ultra_time_ok
 
     updates = {
         "status": status,
@@ -217,6 +239,7 @@ def main():
         "peak_memory_mib": parsed["peak_memory_mib"],
         "final_val_loss": parsed["final_val_loss"],
         "success": success if status == "completed" else False,
+        "ultra_success": ultra_success if status == "completed" else False,
         "partial_success": partial_success if status == "completed" else False,
         "val_loss_history": parsed["val_loss_history"],
         "train_loss_history": parsed["train_loss_history"],
@@ -234,7 +257,14 @@ def main():
     else:
         update_experiment(args.name, updates)
 
-    outcome = "SUCCESS (val+speed)" if success else ("PARTIAL (val loss only)" if partial_success else "not achieved")
+    if ultra_success:
+        outcome = "ULTRA SUCCESS (val+<3.88h)"
+    elif success:
+        outcome = "SUCCESS (val+speed)"
+    elif partial_success:
+        outcome = "PARTIAL (val loss only)"
+    else:
+        outcome = "not achieved"
     print(f"\n[harness] {'=' * 50}")
     print(f"[harness] Experiment: {args.name}")
     print(f"[harness] Status: {status}")
@@ -242,6 +272,8 @@ def main():
     print(f"[harness] Total time: {parsed['total_time_seconds']:.1f}s" if parsed['total_time_seconds'] else "[harness] Total time: N/A")
     if baseline_time and args.name != "exp0_baseline":
         print(f"[harness] vs baseline: {baseline_time:.1f}s -> {'FASTER' if time_ok else 'SLOWER'}")
+    if args.name != "exp0_baseline" and parsed["total_time_seconds"] is not None:
+        print(f"[harness] vs ultra target ({ULTRA_TARGET_HOURS:.2f}h): {'FASTER' if ultra_time_ok else 'SLOWER'}")
     print(f"[harness] Outcome: {outcome}")
     print(f"[harness] Peak memory: {parsed['peak_memory_mib']} MiB")
     print(f"[harness] {'=' * 50}")
