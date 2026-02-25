@@ -25410,13 +25410,13 @@
       "name": "exp68_exp68_single_ema_prefetch",
       "display_name": "exp68_exp68_single_ema_prefetch",
       "description": "exp67 proved EMA with decay=0.998 achieves val_loss=3.3788 (below 3.3821 target) with FULL SUCCESS. This experiment replicates that proven approach with one refinement: overlapping the next training batch load with the optimizer step by moving the next_batch call before backward, reducing potential CPU-GPU sync stalls. Single EMA keeps overhead minimal (~5s total for lerp across all steps + one extra val pass).",
-      "status": "running",
+      "status": "completed",
       "start_time": "2026-02-25T16:53:31.473189",
-      "end_time": null,
-      "total_time_seconds": 9978.85,
+      "end_time": "2026-02-25T22:33:39.036648",
+      "total_time_seconds": 19999.56,
       "total_steps": 4768,
-      "peak_memory_mib": null,
-      "final_val_loss": 3.644523,
+      "peak_memory_mib": 10771,
+      "final_val_loss": 3.378669,
       "success": false,
       "val_loss_history": [
         {
@@ -25494,6 +25494,86 @@
         {
           "step": 2304,
           "val_loss": 3.644523
+        },
+        {
+          "step": 2432,
+          "val_loss": 3.635017
+        },
+        {
+          "step": 2560,
+          "val_loss": 3.625162
+        },
+        {
+          "step": 2688,
+          "val_loss": 3.619704
+        },
+        {
+          "step": 2816,
+          "val_loss": 3.597644
+        },
+        {
+          "step": 2944,
+          "val_loss": 3.596151
+        },
+        {
+          "step": 3072,
+          "val_loss": 3.590758
+        },
+        {
+          "step": 3200,
+          "val_loss": 3.573443
+        },
+        {
+          "step": 3328,
+          "val_loss": 3.568249
+        },
+        {
+          "step": 3456,
+          "val_loss": 3.568198
+        },
+        {
+          "step": 3584,
+          "val_loss": 3.552496
+        },
+        {
+          "step": 3712,
+          "val_loss": 3.544629
+        },
+        {
+          "step": 3840,
+          "val_loss": 3.531018
+        },
+        {
+          "step": 3968,
+          "val_loss": 3.518061
+        },
+        {
+          "step": 4096,
+          "val_loss": 3.488293
+        },
+        {
+          "step": 4224,
+          "val_loss": 3.466453
+        },
+        {
+          "step": 4352,
+          "val_loss": 3.440724
+        },
+        {
+          "step": 4480,
+          "val_loss": 3.417994
+        },
+        {
+          "step": 4608,
+          "val_loss": 3.396438
+        },
+        {
+          "step": 4736,
+          "val_loss": 3.380314
+        },
+        {
+          "step": 4768,
+          "val_loss": 3.378669
         }
       ],
       "train_loss_history": [
@@ -25648,13 +25728,177 @@
         {
           "step": 2368,
           "loss": 3.657817
+        },
+        {
+          "step": 2432,
+          "loss": 3.666829
+        },
+        {
+          "step": 2496,
+          "loss": 3.635066
+        },
+        {
+          "step": 2560,
+          "loss": 3.612916
+        },
+        {
+          "step": 2624,
+          "loss": 3.552005
+        },
+        {
+          "step": 2688,
+          "loss": 3.663783
+        },
+        {
+          "step": 2752,
+          "loss": 3.639224
+        },
+        {
+          "step": 2816,
+          "loss": 3.652132
+        },
+        {
+          "step": 2880,
+          "loss": 3.577137
+        },
+        {
+          "step": 2944,
+          "loss": 3.604694
+        },
+        {
+          "step": 3008,
+          "loss": 3.616533
+        },
+        {
+          "step": 3072,
+          "loss": 3.573511
+        },
+        {
+          "step": 3136,
+          "loss": 3.552254
+        },
+        {
+          "step": 3200,
+          "loss": 3.605498
+        },
+        {
+          "step": 3264,
+          "loss": 3.576059
+        },
+        {
+          "step": 3328,
+          "loss": 3.576844
+        },
+        {
+          "step": 3392,
+          "loss": 3.605752
+        },
+        {
+          "step": 3456,
+          "loss": 3.560536
+        },
+        {
+          "step": 3520,
+          "loss": 3.586669
+        },
+        {
+          "step": 3584,
+          "loss": 3.563114
+        },
+        {
+          "step": 3648,
+          "loss": 3.616004
+        },
+        {
+          "step": 3712,
+          "loss": 3.570397
+        },
+        {
+          "step": 3776,
+          "loss": 3.527049
+        },
+        {
+          "step": 3840,
+          "loss": 3.58508
+        },
+        {
+          "step": 3904,
+          "loss": 3.518951
+        },
+        {
+          "step": 3968,
+          "loss": 3.597097
+        },
+        {
+          "step": 4032,
+          "loss": 3.537593
+        },
+        {
+          "step": 4096,
+          "loss": 3.4739
+        },
+        {
+          "step": 4160,
+          "loss": 3.462868
+        },
+        {
+          "step": 4224,
+          "loss": 3.497289
+        },
+        {
+          "step": 4288,
+          "loss": 3.505166
+        },
+        {
+          "step": 4352,
+          "loss": 3.463015
+        },
+        {
+          "step": 4416,
+          "loss": 3.420129
+        },
+        {
+          "step": 4480,
+          "loss": 3.526725
+        },
+        {
+          "step": 4544,
+          "loss": 3.516879
+        },
+        {
+          "step": 4608,
+          "loss": 3.399406
+        },
+        {
+          "step": 4672,
+          "loss": 3.383436
+        },
+        {
+          "step": 4736,
+          "loss": 3.354763
         }
       ],
       "log_file": "experiments/exp68_exp68_single_ema_prefetch/output.log",
-      "key_findings": "",
-      "last_step": 2374,
-      "partial_success": false,
-      "ultra_success": false
+      "key_findings": "Experiment exp68 replicated exp67's proven single EMA (decay=0.998) approach with an added data prefetching optimization (moving next_batch loading before backward to overlap CPU-GPU transfers), achieving a validation loss of 3.378669 (0.0034 below the 3.3821 target) but missing the time requirement by just 12.33 seconds (19,999.56s vs baseline's 19,987.23s), earning only PARTIAL success compared to exp67's FULL SUCCESS at 19,980.01s. The prefetching modification, rather than reducing training time as hypothesized, actually added ~20 seconds compared to exp67's implementation, suggesting the reordering of batch loading and backward passes either introduced additional synchronization overhead or simply didn't help in this already GPU-bound training setup. This demonstrates that exp67's simpler approach without prefetching remains the optimal configuration, and that attempting micro-optimizations to the training loop can backfire when operating within a razor-thin ~10-second timing margin.",
+      "last_step": 4766,
+      "partial_success": true,
+      "ultra_success": false,
+      "claude_metadata": {
+        "hypothesis": "Using a single EMA (decay=0.998) evaluated only at the final step, combined with training batch prefetching overlap, provides both val_loss improvement and faster-than-baseline time.",
+        "expected_impact": "Val loss ~3.376-3.382 (matching exp67's 3.3788). Wall-clock time ~19,975-19,990s (matching exp67's 19,980s). High confidence of FULL SUCCESS based on exp67 precedent.",
+        "risk_assessment": "Very low risk. This is essentially a replication of exp67 which achieved FULL SUCCESS (val_loss=3.3788, time=19,980s). The batch prefetch change is minor and cannot hurt correctness. Main risk is run-to-run variance pushing val_loss above 3.3821, but exp67's margin (0.0033 below target) provides good buffer.",
+        "dual_objective_plan": {
+          "speed_path": "Single EMA shadow adds only ~5s total overhead for lerp updates across 4768 steps. One extra val pass at the final step adds ~5s. Batch prefetching (next_batch before backward) overlaps CPU data loading with GPU backward pass. Total overhead ~10s is within the margin exp67 demonstrated (19,980s vs 20,004s baseline).",
+          "quality_path": "EMA with decay=0.998 is proven to achieve val_loss=3.3788 in exp67 (below target 3.3821). The min(raw, ema) selection provides a floor at raw model performance with upside from EMA averaging.",
+          "tradeoff_guard": "Training dynamics are 100% unchanged from baseline. EMA is a passive shadow updated after each optimizer step. Only at the final step do we run one extra validation pass. Prefetch doesn't change training semantics since the batch was already loaded before forward pass."
+        },
+        "novelty_against_prior": "This is a reliability replication of exp67's proven FULL SUCCESS approach. The only difference is batch prefetching (moving next_batch before backward) which may provide a small speed benefit from CPU-GPU overlap. This targets reproducibility of the dual-objective success.",
+        "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
+      },
+      "val_target_met": true,
+      "faster_than_baseline": false,
+      "delta_to_target": -0.003430999999999962,
+      "speedup_pct": -0.061689388674679435
     }
   ]
 }
