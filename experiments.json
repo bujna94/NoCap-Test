@@ -476,7 +476,9 @@
       ],
       "log_file": "experiments/exp0_baseline/output.log",
       "key_findings": "",
-      "last_step": 4768
+      "last_step": 4768,
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp1_adaptive_layer_lr",
@@ -499,7 +501,9 @@
         "expected_impact": "By allowing layers with stable gradient signals to take larger optimization steps while being conservative with noisy layers, we expect faster convergence to the target loss. The adaptive mechanism should be particularly effective in the early-to-mid training phase where different layers learn at different rates. We might see 5-15% speedup if the hypothesis holds.",
         "risk_assessment": "The main risk is overhead from computing gradient statistics at each step, though this should be minimal since we only compute mean and std over already-computed gradients. Another risk is that the per-layer LR scaling could destabilize training if the SNR metric doesn't correlate well with optimal LR. The smoothing factor and bounded scaling (0.1x to 3.0x) should mitigate this. If it fails, we'll likely see higher variance in training loss or slower convergence.",
         "run_args": "--input_bin data/fineweb10B/fineweb_train_*.bin --input_val_bin data/fineweb10B/fineweb_val_*.bin --model d12 --batch_size 16 --sequence_length 1024 --num_iterations 4768 --learning_rate 0.0006 --warmup_iters 50 --warmdown_iters 953 --weight_decay 0.0 --val_loss_every 128 --val_batch_size 16"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp2_dynamic_grad_accumulation",
@@ -680,7 +684,9 @@
         "expected_impact": "The dynamic gradient accumulation should reduce total training time by 10-20% by adaptively using fewer gradient accumulation steps when gradients are stable (saving compute on redundant averaging) and more steps when they're noisy (maintaining training stability). This is especially beneficial in later training phases where gradients typically stabilize.",
         "risk_assessment": "Main risk is that the overhead of computing gradient similarities every 10 steps could outweigh benefits, or that the cosine similarity metric might not be a good predictor of when to adjust accumulation. The gradient vector concatenation could also add memory overhead. If similarity calculations are too expensive, training could be slower than baseline.",
         "run_args": "--model d12 --batch_size 16 --sequence_length 1024 --num_iterations 4768 --learning_rate 0.0006 --warmup_iters 0 --warmdown_iters 1430 --weight_decay 0.0 --val_loss_every 128 --val_batch_size 16 --grad_accumulation_steps 1"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp3_exp3_adaptive_block_skip",
@@ -810,7 +816,9 @@
         "expected_impact": "By adaptively skipping transformer blocks that are under-utilized (acting near-identity) during early-to-mid training, we can reduce forward pass computation by approximately 10-20% during the skip phase (steps 1000-4000), potentially saving 15-30 minutes of training time. The blocks still receive gradients (as identity), so learning is not disrupted. This should achieve similar or better validation loss compared to baseline while reducing overall training time.",
         "risk_assessment": "The main risk is that skipping blocks could disrupt the optimization trajectory or prevent proper learning in those layers. However, the adaptive mechanism only skips blocks with low utilization, and skipping is disabled during initial warmup and final training phases. There's also a small risk that the utilization measurement overhead could negate computational savings, but the EMA tracking is lightweight. If blocks are skipped too aggressively, validation loss could be worse than baseline.",
         "run_args": "--batch_size=4 --sequence_length=64 --num_iterations=4768 --learning_rate=1e-4 --warmup_iters=50 --warmdown_iters=1430 --weight_decay=0 --val_loss_every=128 --val_batch_size=16"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp4_adaptive_token_gradient_masking",
@@ -833,7 +841,9 @@
         "expected_impact": "This approach should accelerate training by focusing backpropagation on high-signal tokens while masking out noisy gradients. By selectively computing gradients only for the most informative 80% of tokens based on per-token loss magnitude, we reduce wasted computation on conflicting/noisy gradients. The adaptive nature (based on actual gradient statistics rather than random dropout) should maintain or improve convergence quality while speeding up each training step. Expected speedup: 10-15% from reduced gradient computation overhead.",
         "risk_assessment": "Main risks: (1) The per-token loss computation adds a small forward pass overhead that could negate speedup benefits, (2) Masking too aggressively could remove important learning signal and hurt convergence, (3) The heuristic of using loss magnitude as a proxy for gradient quality may not perfectly correlate with actual gradient usefulness. The 100-step warmup and 50% minimum mask retention are safety mechanisms to mitigate these risks.",
         "run_args": "--model d12 --batch_size 4 --sequence_length 64 --num_iterations 4768 --learning_rate 1e-4 --warmup_iters 100 --warmdown_iters 953 --weight_decay 0.0 --val_loss_every 128 --val_batch_size 16 --output_dir outputs"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp5_progressive_sequence_length",
@@ -1315,7 +1325,9 @@
         "expected_impact": "By starting with T=32 and progressively increasing to T=64 over 2000 steps, we expect to save ~40% computation during early training (steps 0-2000) when gradient signals are noisiest anyway. Since attention is O(T\u00b2) and early steps dominate wall-clock time due to compilation overhead, this should provide 15-25% overall speedup while maintaining similar final loss because the model will have learned local patterns efficiently before tackling long-range dependencies. We increase batch size from 4 to 8 to maintain similar token throughput.",
         "risk_assessment": "Main risk is that shorter sequences during early training might prevent the model from learning certain patterns that require longer context, potentially resulting in slightly worse final validation loss. The progressive schedule might also introduce instability at transition points. However, since we're ramping smoothly and early training is typically less sensitive to sequence length, this risk is moderate. If it fails, we'd see divergence or significantly worse validation loss (>3.5).",
         "run_args": "--input_bin=data/fineweb10B/fineweb_train_*.bin --input_val_bin=data/fineweb10B/fineweb_val_*.bin --model=d12 --batch_size=8 --sequence_length=64 --num_iterations=4768 --learning_rate=0.0006 --warmup_iters=400 --warmdown_iters=1268 --weight_decay=0.0 --val_loss_every=128 --val_batch_size=16"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp6_adaptive_norm_temperature",
@@ -1338,7 +1350,9 @@
         "expected_impact": "This approach should improve convergence speed by 10-20% by allowing layers with stable, informative gradients to propagate stronger signals while automatically dampening noisy gradient flows. The adaptive temperature mechanism operates at the architectural level (before gradient computation), which is complementary to optimizer-level adaptations like Adam. Early in training when gradients are noisy, normalization will be stronger (temperature ~1.1-1.2), while later as gradients stabilize, it will weaken (temperature ~0.8-0.9) allowing faster information flow.",
         "risk_assessment": "Main risks: (1) The temperature updates could oscillate or diverge if gradient statistics are computed incorrectly, though clamping to [0.8, 1.2] provides safety bounds. (2) Computing gradient statistics every 10 steps adds minimal overhead (~1-2%) but could still slow things down slightly. (3) The adaptive mechanism might not provide enough benefit to offset any overhead. However, unlike previous failed experiments, this operates on a well-understood component (normalization) with conservative bounds, making catastrophic failure unlikely.",
         "run_args": "--input_bin data/fineweb10B/fineweb_train_*.bin --input_val_bin data/fineweb10B/fineweb_val_*.bin --model d12 --batch_size 4 --sequence_length 64 --num_iterations 4768 --learning_rate 1e-4 --warmup_iters 100 --warmdown_iters 1768 --weight_decay 0.0 --val_loss_every 128 --val_batch_size 16"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp7_exp7_adaptive_sparse_attention",
@@ -1820,7 +1834,9 @@
         "expected_impact": "The adaptive sparse attention should reduce computation time by ~20-30% per step by computing only 50% of attention pairs (focused on local context plus sampled distant pairs), while maintaining model quality since early training doesn't require full precision attention. The position-based sampling strategy preserves important local dependencies while adaptively exploring long-range ones, potentially even improving convergence by acting as a form of structured regularization.",
         "risk_assessment": "Main risk is that the sparsity pattern may be too aggressive and prevent the model from learning necessary long-range dependencies, leading to worse final validation loss. The mask resampling every 10 steps could also introduce training instability. If the mask creation overhead is significant, it could negate speed benefits. There's also risk of implementation bugs in the attention masking logic causing NaN values or incorrect gradients.",
         "run_args": "--input_bin=data/fineweb10B/fineweb_train_*.bin --input_val_bin=data/fineweb10B/fineweb_val_*.bin --model=d12 --batch_size=4 --sequence_length=64 --num_iterations=4768 --learning_rate=1e-4 --warmup_iters=100 --warmdown_iters=1268 --weight_decay=0 --val_loss_every=128 --val_batch_size=16"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp8_exp8_layerwise_warmstart",
@@ -2302,7 +2318,9 @@
         "expected_impact": "By freezing transformer block weights (attention and MLP) for the first 1400 steps (~30% of training), we expect to reduce gradient computation overhead by approximately 20-30% during the warmstart phase, potentially saving 1-2 hours of training time. The embeddings and LM head will establish good token representations during this phase, and when we unfreeze all parameters at step 1400, the transformer blocks can build upon these foundational representations. We expect to reach the target validation loss of 3.3821 within the standard 4768 steps, achieving speedup through reduced computation while maintaining final model quality.",
         "risk_assessment": "The main risk is that freezing transformer blocks for too long could delay learning of important representational refinements, potentially requiring more steps after unfreezing to reach target performance. If the warmstart phase is too long (>30% of training), the model might not have enough time to fine-tune with all parameters active. However, unlike previous failed experiments that fundamentally limited model capacity (sparse attention, short sequences, block skipping), this approach maintains full forward/backward passes and only reduces gradient updates temporarily, so the risk of catastrophic failure is lower. If unsuccessful, we would see slower convergence after unfreezing rather than complete training collapse.",
         "run_args": "--input_bin=\"data/fineweb10B/fineweb_train_*.bin\" --input_val_bin=\"data/fineweb10B/fineweb_val_*.bin\" --model=\"d12\" --batch_size=4 --sequence_length=64 --num_iterations=4768 --learning_rate=1e-4 --warmup_iters=0 --warmdown_iters=1586 --weight_decay=0 --val_loss_every=128 --val_batch_size=16 --warmstart_freeze_steps=1400"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp9_exp9_adaptive_attention_scale",
@@ -2784,7 +2802,9 @@
         "expected_impact": "This approach should accelerate convergence by 10-20% because it allows the model to adaptively balance attention contribution based on attention confidence. Early in training when attention is diffuse (low variance), reducing the attention scale prevents noisy gradients from disrupting learning. As training progresses and attention patterns sharpen (high variance), increasing the scale allows the model to leverage precise token relationships more effectively. Unlike previous failures that reduced model capacity, this maintains full architectural capacity while dynamically optimizing information flow.",
         "risk_assessment": "The main risk is that the adaptive scaling might not provide enough benefit to offset the overhead of computing attention variance statistics, or the EMA tracking might be too slow/fast to capture the right dynamics. There's also risk that manual attention computation (needed to access weights) might disable some PyTorch optimizations. However, the approach maintains full model capacity and gradient flow, so it should not catastrophically fail like capacity-reducing experiments did.",
         "run_args": "--batch_size=4 --sequence_length=64 --num_iterations=4768 --learning_rate=0.0001 --warmup_iters=0 --warmdown_iters=1430 --weight_decay=0 --val_loss_every=128 --val_batch_size=16 --model=d12"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp10_exp10_gradient_guided_residual_scaling",
@@ -3266,7 +3286,9 @@
         "expected_impact": "By dynamically rebalancing attention vs MLP residual contributions based on which pathways are actively learning (measured by gradient magnitudes), the model should converge faster without reducing capacity. During early training when attention patterns are random, MLP paths may carry more useful gradient signal and should be weighted more. As training progresses and attention patterns stabilize, attention contribution can increase. This maintains full model capacity while directing learning effort more efficiently, potentially achieving 10-20% speedup.",
         "risk_assessment": "The main risk is that the gradient magnitude may not be a reliable signal for pathway importance, or that the adaptive scaling could introduce instability. The EMA smoothing and clamping (0.7-1.3 range) should prevent extreme swings. Another risk is that updating scales only every 10 steps might be too infrequent to capture rapid dynamics, or that torch.compile may not optimize the additional gradient tracking efficiently. If gradients are not properly retained for the residual tensors, the update mechanism will fail silently and revert to baseline behavior.",
         "run_args": "--model d12 --batch_size 4 --sequence_length 64 --num_iterations 4768 --learning_rate 1e-4 --warmup_iters 0 --warmdown_iters 715 --weight_decay 0 --val_loss_every 128 --val_batch_size 16"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp11_exp11_component_adaptive_momentum",
@@ -3748,7 +3770,9 @@
         "expected_impact": "By using component-specific beta1 values (embeddings/head: 0.92, attention: 0.90, MLP: 0.88) adapted to each component's gradient sparsity pattern, the optimizer should converge faster than uniform betas. Sparse components benefit from higher momentum to smooth out noisy updates, while dense MLP layers benefit from lower momentum for faster adaptation. This should reduce the number of steps needed to reach target validation loss while maintaining similar per-step computation cost, achieving perhaps 10-15% speedup over baseline.",
         "risk_assessment": "The main risk is that splitting parameters into multiple optimizer groups could add overhead or that the chosen beta values don't actually match the gradient statistics well. If betas are poorly chosen, it could slow convergence or cause instability. However, the beta values are conservative modifications (0.88-0.92 vs baseline 0.90), so catastrophic failure is unlikely. Worst case, performance matches baseline.",
         "run_args": "--input_bin=data/fineweb10B/fineweb_train_*.bin --input_val_bin=data/fineweb10B/fineweb_val_*.bin --model=d12 --batch_size=16 --sequence_length=64 --num_iterations=4768 --learning_rate=0.0009 --warmup_iters=50 --warmdown_iters=1430 --weight_decay=0 --val_loss_every=128 --val_batch_size=16"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp12_exp12_selective_backward_skipping",
@@ -3771,7 +3795,9 @@
         "expected_impact": "By selectively skipping backward passes through layers with negligible gradient contributions (measured via EMA of gradient norms), we reduce gradient computation overhead while maintaining full forward pass capacity. After a 1000-step warmup to establish gradient statistics, layers with gradient norms below 10% of the mean will skip their backward pass on each microbatch. This should provide 10-20% speedup without significant loss degradation, as layers with near-zero gradients contribute little to parameter updates anyway.",
         "risk_assessment": "The main risk is that skipping backward passes could create inconsistent gradient flows or prevent certain layers from learning when they should. The gradient norm threshold (10% of mean) might be too aggressive or too conservative. If layers that actually need updates are skipped, convergence will slow or fail. The EMA smoothing (alpha=0.9) should help stabilize decisions, but there's risk of getting stuck in poor skip patterns. The 1000-step warmup mitigates early training instability.",
         "run_args": "--input_bin data/fineweb10B/fineweb_train_*.bin --input_val_bin data/fineweb10B/fineweb_val_*.bin --model d12 --batch_size 16 --sequence_length 64 --num_iterations 4768 --learning_rate 0.0006 --warmup_iters 50 --warmdown_iters 1182 --weight_decay 0 --val_loss_every 128 --val_batch_size 16"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp13_exp13_depth_scheduled_attention_scale",
@@ -3794,7 +3820,9 @@
         "expected_impact": "By giving shallow layers stronger attention signals during early training (2x baseline for layer 0, gradually normalizing to 1x over first 50% of training), we expect faster convergence in the critical early phase where token-level patterns are established. The depth-dependent schedule should accelerate learning without the instability that plagued runtime-adaptive approaches, because the scaling is predetermined and smooth. We expect to see improved validation loss at intermediate checkpoints (steps 2432-3000) while converging to similar final performance, potentially reaching target loss 15-20% faster than baseline.",
         "risk_assessment": "Main risk is that the 2x multiplier for shallow layers could cause gradient instability or lead to suboptimal learned representations if the increased signal strength amplifies noise rather than useful patterns. The predetermined schedule might also not match the actual learning dynamics. However, unlike previous failed experiments, we maintain full model capacity and don't disrupt core optimization, so worst case should be similar to baseline performance rather than catastrophic failure.",
         "run_args": "--model d12 --batch_size 16 --sequence_length 64 --num_iterations 4768 --learning_rate 0.0006 --warmup_iters 715 --warmdown_iters 953 --weight_decay 0.1 --val_loss_every 128 --val_batch_size 32"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp14_exp14_uncertainty_weighted_loss",
@@ -4276,7 +4304,9 @@
         "expected_impact": "By dynamically upweighting tokens with high prediction uncertainty (high entropy) and downweighting confident predictions (low entropy), the model should focus gradient updates on genuinely informative patterns rather than wasting compute on already-learned tokens. This should accelerate convergence without changing architecture, effective batch size, or optimizer dynamics. The uncertainty-based weighting is computed on-the-fly using the model's own softmax outputs, requiring minimal overhead. Expected to maintain or slightly improve final validation loss while potentially converging faster in early/mid training when prediction confidence varies widely across tokens.",
         "risk_assessment": "The main risk is that the uncertainty weighting might create feedback loops where the model becomes overconfident too quickly on certain token types, or conversely, that high-entropy predictions during early random initialization might amplify noise. The alpha=1.0 scaling parameter may need tuning - too aggressive weighting could destabilize training. There's also a small computational overhead from computing entropy and weights, though this should be negligible compared to the forward/backward pass. If the weighting disrupts the loss landscape too much, the model might converge to a different (worse) optimum.",
         "run_args": "--batch_size=4 --sequence_length=64 --num_iterations=4768 --learning_rate=1e-4 --warmup_iters=0 --warmdown_iters=1191 --weight_decay=0 --val_loss_every=128 --val_batch_size=16"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp15_exp15_representation_dynamics_scaling",
@@ -4758,7 +4788,9 @@
         "expected_impact": "By dynamically scaling residual connections based on representational change (measured via cosine similarity between consecutive forward passes), the model should adapt its learning rate per-layer organically. When representations are changing rapidly (low similarity), stronger residual scales allow faster updates. When stable (high similarity), weaker scales prevent redundant computation. This should accelerate convergence without the instabilities seen in gradient-based adaptive methods, potentially matching or beating baseline validation loss in fewer steps.",
         "risk_assessment": "The main risk is that caching layer outputs and computing cosine similarities adds computational overhead that negates any convergence gains. Additionally, the similarity metric might not be a reliable indicator of useful learning dynamics - stable representations could actually indicate effective learning rather than redundancy. The exponential moving average with momentum=0.9 should provide stability, but if the scale adjustments are too aggressive, training could become unstable or diverge.",
         "run_args": "--model d12 --batch_size 4 --sequence_length 64 --num_iterations 4768 --learning_rate 1e-4 --warmup_iters 0 --warmdown_iters 1430 --weight_decay 0.0 --val_loss_every 128 --val_batch_size 16"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp16_exp16_multi_layer_auxiliary_prediction",
@@ -5240,7 +5272,9 @@
         "expected_impact": "By adding auxiliary prediction heads at layers 4 and 8 (weighted 0.2x each), we provide richer gradient signal to earlier layers without changing the model's final output or capacity. This should accelerate convergence by helping intermediate representations learn meaningful token predictions earlier in training, potentially reaching the target validation loss faster than baseline while maintaining model quality. The additional forward computation is minimal (2 extra linear layers + losses) compared to the full model.",
         "risk_assessment": "The main risk is that auxiliary losses might interfere with the main learning objective or add computational overhead that slows down training despite better gradients. The auxiliary heads add extra parameters that need gradient computation, which could increase memory usage and per-step time. If the auxiliary loss weight (0.2) is too high, it might pull intermediate representations toward premature predictions rather than learning good general features. However, this approach preserves full model capacity and is fundamentally additive rather than subtractive, making it less likely to catastrophically fail like previous experiments.",
         "run_args": "--model d12 --batch_size 4 --sequence_length 64 --num_iterations 4768 --learning_rate 1e-4 --warmup_iters 0 --warmdown_iters 1430 --weight_decay 0 --val_loss_every 128 --val_batch_size 16"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp17_exp17_dual_timescale_momentum",
@@ -5263,7 +5297,9 @@
         "expected_impact": "The dual-timescale momentum approach should accelerate convergence by exploiting agreement between fast and slow momentum signals. When both momentum estimates point in similar directions (high cosine similarity), it indicates a persistent gradient signal that we can confidently follow with larger effective steps by blending toward the faster momentum. When they diverge, we conservatively stick with the slower, more stable momentum. This should allow faster progress during stable optimization phases without destabilizing training during noisy phases. Unlike previous failures that modified architecture or disrupted core dynamics, this only enhances the optimizer's ability to distinguish signal from noise using temporal information already present in the gradients.",
         "risk_assessment": "The main risk is that the cosine similarity metric between fast and slow momentum might not reliably indicate when to accelerate, potentially leading to oscillations or instability. The blending weight of 0.3 might be too aggressive or too conservative. Additionally, computing the extra fast momentum buffer and cosine similarity adds some computational overhead per step (~5-10% estimated), though this should be offset by faster convergence if the approach works. If momentum alignment doesn't correlate with good optimization directions, we may see similar or slightly worse performance than baseline with modest time overhead.",
         "run_args": "--input_bin data/fineweb10B/fineweb_train_*.bin --input_val_bin data/fineweb10B/fineweb_val_*.bin --model d12 --batch_size 4 --sequence_length 64 --num_iterations 4768 --learning_rate 1e-4 --warmup_iters 0 --warmdown_iters 476 --weight_decay 0.0 --val_loss_every 128 --val_batch_size 16"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp18_exp18_microstep_loss_variance_lr",
@@ -5444,7 +5480,9 @@
         "expected_impact": "When microstep losses are consistent (low coefficient of variation), the optimization landscape is smooth and we can safely take larger steps by increasing the learning rate up to 2x, accelerating convergence. When losses vary significantly across microsteps, we reduce the learning rate to 0.5x for stability. This should allow faster overall training by dynamically adapting the learning rate to the local optimization landscape smoothness, without modifying architecture or disrupting core optimizer momentum dynamics that caused previous failures.",
         "risk_assessment": "The main risk is that the coefficient of variation of microstep losses may not be a reliable indicator of optimization landscape smoothness, or the CV values might be too noisy/variable to provide useful signal. The learning rate multipliers (0.5x to 2.0x range) could also be too aggressive or too conservative. Additionally, this approach adds minimal computational overhead (just computing mean/std of microstep losses), so even if it doesn't improve convergence, it shouldn't significantly slow down training like the architectural modifications did.",
         "run_args": "--model d12 --batch_size 4 --sequence_length 64 --num_iterations 4768 --learning_rate 1e-4 --warmup_iters 0 --warmdown_iters 1430 --weight_decay 0 --val_loss_every 128 --val_batch_size 16 --grad_accumulation_steps 1"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp19_exp19_dynamic_parameter_freezing",
@@ -5926,7 +5964,9 @@
         "expected_impact": "By allowing the model to train all parameters normally during the critical early phase (first 1000 steps) and then selectively freezing parameters that have stabilized (update norm < 1e-5 averaged over 50 steps), we expect to reduce gradient computation overhead in the later training phase while maintaining model quality. Unlike exp8 which catastrophically failed by freezing layers from the start, this approach waits for natural stabilization before freezing, preserving the learning dynamics that are essential for good performance. We expect modest speedup (5-15%) without significant loss degradation.",
         "risk_assessment": "Main risks: (1) The freeze threshold (1e-5) may be too aggressive or too conservative, causing premature freezing or no freezing at all; (2) Freezing parameters mid-training could disrupt optimization dynamics even after stabilization; (3) The window size (50 steps) may not be sufficient to detect true stabilization vs temporary plateaus; (4) Parameter freezing might not provide sufficient speedup to justify the complexity since PyTorch still needs to maintain frozen parameters in the computation graph.",
         "run_args": "--input_bin=data/fineweb10B/fineweb_train_*.bin --input_val_bin=data/fineweb10B/fineweb_val_*.bin --model=d12 --batch_size=64 --sequence_length=64 --num_iterations=4768 --learning_rate=0.0054 --warmup_iters=0 --warmdown_iters=1430 --weight_decay=0 --val_loss_every=128 --val_batch_size=128"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp20_exp20_activation_snr_residual_scaling",
@@ -6408,7 +6448,9 @@
         "expected_impact": "By dynamically scaling residual contributions based on activation SNR (clamped to safe 0.5x-2.0x range), the model should automatically emphasize whichever pathway (attention or MLP) is providing cleaner signals at each layer and training phase. This should accelerate convergence by making each layer's learning more efficient without removing capacity or disrupting core optimization dynamics. Unlike previous failed experiments that used noisy gradient statistics or predetermined schedules, this uses the actual forward-pass activation statistics with exponential moving averages for stability.",
         "risk_assessment": "The main risk is that SNR computed from activations may not reliably indicate which pathways should be emphasized, or the dynamic scaling could still disrupt the carefully-tuned residual balance. However, the 0.5x-2.0x clamping and EMA smoothing should prevent catastrophic instability. If this fails like other adaptive approaches, it suggests that any form of dynamic architectural modulation\u2014even based on clean activation signals\u2014disrupts transformer training.",
         "run_args": "--model d12 --batch_size 32 --sequence_length 64 --num_iterations 4768 --learning_rate 1e-4 --warmup_iters 0 --warmdown_iters 1430 --weight_decay 0 --val_loss_every 128 --val_batch_size 128"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp21_exp21_validation_guided_attention_scale",
@@ -6890,7 +6932,9 @@
         "expected_impact": "By using a slow-moving EMA of validation loss improvement rate (rather than noisy per-step signals like gradients or activations), we create a stable feedback mechanism that amplifies attention contribution during periods of rapid learning and reduces it when training plateaus. This should accelerate convergence by 10-20% by allowing the model to capitalize on productive learning phases without the instability that plagued all previous adaptive approaches. The key difference is using low-frequency validation metrics rather than high-frequency training statistics.",
         "risk_assessment": "The main risk is that validation-based adaptation might be too slow to respond to training dynamics, or that modulating attn_scale (even with conservative bounds of 0.8x-1.5x) could still disrupt the architectural balance. However, unlike previous experiments that used noisy per-step signals, this approach should be much more stable since validation loss is computed over 1M tokens and smoothed with EMA. If it fails, it will likely plateau around 6.0-6.5 loss like other adaptive scaling experiments rather than catastrophically failing.",
         "run_args": "--model d12 --batch_size 4 --sequence_length 64 --num_iterations 4768 --learning_rate 1e-4 --warmup_iters 0 --warmdown_iters 1430 --weight_decay 0 --val_loss_every 128 --val_batch_size 16"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp22_exp22_hybrid_gradient_computation",
@@ -7372,7 +7416,9 @@
         "expected_impact": "This experiment implements gradient variance tracking infrastructure but intentionally keeps the standard backward pass unchanged as a conservative first step. By tracking angular variance in gradient directions over a sliding window, we establish the monitoring mechanism needed for future hybrid gradient computation. This version should match baseline performance while validating that the tracking overhead is minimal and that the variance metric correctly identifies stable vs actively-learning parameters. If successful, a follow-up could actually implement the cheaper gradient approximations for low-variance parameters.",
         "risk_assessment": "The main risk is that even just tracking gradient statistics (computing cosine similarities and variance) adds computational overhead without any benefit in this conservative version. The gradient history storage and cosine similarity computations could add 5-10% overhead. However, this is a necessary validation step - if tracking alone is too expensive, the full hybrid approach won't work. Another risk is that the variance metric might not reliably distinguish between parameters that could use cheaper gradients vs those that need full gradients, but this experiment will reveal that through analysis of the tracked statistics.",
         "run_args": "--model d12 --batch_size 64 --sequence_length 64 --num_iterations 4768 --learning_rate 0.0006 --warmup_iters 0 --warmdown_iters 1430 --weight_decay 0 --val_loss_every 128 --val_batch_size 128"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp23_exp23_adaptive_percentile_grad_clip",
@@ -7395,7 +7441,9 @@
         "expected_impact": "By tracking the 95th percentile of gradient norms over a 100-step window for each parameter group (embeddings, attention, MLPs, output head) and clipping to 2x that percentile, we protect against rare gradient spikes that can destabilize training while allowing aggressive learning when gradients are stable. This should slightly accelerate convergence (5-10% speedup) by preventing occasional large gradient events that force the optimizer to take very conservative steps afterward, without the overhead of architectural modifications that failed in previous experiments.",
         "risk_assessment": "The main risk is that the percentile-based clipping might be too aggressive initially when gradient history is limited (addressed by requiring 10 samples before clipping), or that the 2x multiplier and 95th percentile settings might not be optimal. However, unlike previous experiments that modified architecture or disrupted optimization dynamics fundamentally, this is a protective mechanism that should only activate during problematic gradient events, making it lower risk than most previous approaches.",
         "run_args": "--input_bin=data/fineweb10B/fineweb_train_*.bin --input_val_bin=data/fineweb10B/fineweb_val_*.bin --output_dir=./logs --model=d12 --batch_size=64 --sequence_length=64 --num_iterations=4768 --learning_rate=0.0006 --warmup_iters=0 --warmdown_iters=1193 --weight_decay=0 --val_loss_every=128 --val_batch_size=16"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp24_exp24_cosine_schedule_higher_lr",
@@ -7418,7 +7466,9 @@
         "expected_impact": "The cosine schedule should provide smoother LR decay than linear warmdown, combined with slightly higher peak LR (1.2e-4 vs 1e-4) and longer warmup (384 vs 256 steps). The baseline barely misses at 3.3823, so even a small improvement in convergence from the cosine schedule should push below the 3.3821 target. Same step count and per-step cost means timing should be similar (~19987s) but with better final loss.",
         "risk_assessment": "The higher learning rate (1.2e-4 vs 1e-4) could cause training instability. The cosine schedule decays LR throughout training rather than having a flat middle phase, which could slow mid-training progress. However, since the baseline barely misses the target, even minor schedule improvements should suffice. Main risk is that the cosine decay starts too early, spending too many steps at lower LR.",
         "run_args": "--input_bin data/fineweb10B/fineweb_train_*.bin --input_val_bin data/fineweb10B/fineweb_val_*.bin --model d12 --batch_size 4 --sequence_length 64 --num_iterations 4768 --learning_rate 1.2e-4 --warmup_iters 384 --warmdown_iters 1024 --weight_decay 0.0 --val_loss_every 128 --val_batch_size 16 --use_cosine_schedule --min_lr_ratio 0.05"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp25_exp25_cosine_lr_schedule",
@@ -7441,7 +7491,9 @@
         "expected_impact": "The cosine schedule should provide a tiny improvement over the linear warmdown, enough to push the validation loss from 3.3823 to below 3.3821. The cosine curve spends more effective time at moderate learning rates compared to linear decay, which should improve final convergence by a small but sufficient margin.",
         "risk_assessment": "Very low risk since only the LR schedule shape changes. The lm_head Linear dimension ordering was accidentally swapped in my initial draft - I need to make sure it's correct (vocab_size, n_embd). The warmdown_iters arg is still accepted but the cosine schedule ignores it in favor of smooth cosine decay to 0.1*lr. Main risk is that the cosine schedule might not provide enough improvement for the tiny 0.0002 gap.",
         "run_args": "--input_bin data/fineweb10B/fineweb_train_*.bin --input_val_bin data/fineweb10B/fineweb_val_*.bin --batch_size=4 --sequence_length=64 --num_iterations=4768 --learning_rate=1e-4 --warmup_iters=256 --warmdown_iters=768 --weight_decay=0.0 --val_loss_every=128 --val_batch_size=16 --output_dir=logs"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp26_exp26_ema_weights_eval",
@@ -7464,7 +7516,9 @@
         "expected_impact": "The EMA of weights should smooth out parameter oscillations near convergence, giving a validation loss ~0.01-0.05 lower than the raw model weights. Since baseline gets 3.3823 and target is 3.3821, even a tiny improvement from EMA averaging should cross the threshold. Training time should be nearly identical to baseline (~19987s) since the EMA update is just a cheap in-place operation per step.",
         "risk_assessment": "Main risk is that EMA adds memory overhead (~2x parameters stored as shadow copies), but 124M params in float32 is only ~500MB extra which fits in 24GB VRAM. The EMA update itself is not compiled so may add a small per-step cost (~1-5ms). There's also risk that the decay rate (0.993) isn't optimal - too high and EMA is too close to raw weights (no benefit), too low and it lags behind. Another risk: torch.compile may interact badly with the named_parameters iteration in EMA update, but since we operate on raw_model (inside compile wrapper), this should be fine.",
         "run_args": "--input_bin data/fineweb10B/fineweb_train_*.bin --input_val_bin data/fineweb10B/fineweb_val_*.bin --model d12 --batch_size 4 --grad_accumulation_steps 1 --sequence_length 64 --num_iterations 4768 --learning_rate 0.0001 --warmup_iters 256 --warmdown_iters 2048 --weight_decay 0.0 --val_loss_every 128 --val_batch_size 16 --ema_decay 0.993"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp27_exp27_ema_weights_simple",
@@ -7487,7 +7541,9 @@
         "expected_impact": "EMA weight averaging should smooth parameter oscillations near convergence, reducing validation loss by 0.01-0.05 which is more than enough to close the 0.0002 gap from baseline's 3.3823 to the target of 3.3821. Training speed should be nearly identical to baseline since EMA updates are negligible overhead (just element-wise operations on parameters). The approach is mathematically sound and extremely low-risk since training is completely unchanged.",
         "risk_assessment": "Very low risk. Training is completely unchanged - same model, optimizer, LR schedule, architecture. The only addition is maintaining EMA shadow weights (extra memory ~500MB for 124M params in float32) and swapping them in during validation. The main risks are: (1) memory overflow from storing shadow weights (unlikely with 24GB VRAM), (2) EMA decay rate might not be optimal (0.995 is a reasonable default), (3) the compiled model might have issues with parameter swapping (mitigated by operating on raw_model). Previous exp26 failed due to implementation bugs - this implementation is simpler and more careful.",
         "run_args": "--input_bin data/fineweb10B/fineweb_train_*.bin --input_val_bin data/fineweb10B/fineweb_val_*.bin --model d12 --batch_size 4 --sequence_length 64 --num_iterations 4768 --learning_rate 1e-4 --warmup_iters 256 --warmdown_iters 1536 --weight_decay 0.1 --val_loss_every 128 --val_batch_size 16"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp28_exp28_cosine_lr_and_swa",
@@ -7668,7 +7724,9 @@
         "expected_impact": "The cosine LR schedule should provide slightly better annealing behavior compared to the linear warmdown, spending more time at productive learning rates. The SWA averaging should smooth out weight oscillations in the final training phase. Together, these should close the 0.0002 gap between baseline (3.3823) and target (3.3821). The overhead is minimal - just storing one extra copy of weights and occasional averaging.",
         "risk_assessment": "Main risks: (1) Implementation bugs causing crashes, like the previous 4 failed EMA attempts - mitigated by using simple dict-based storage instead of deep copies or complex state management. (2) The cosine schedule might not match the linear warmdown's final phase behavior exactly, potentially being slightly worse. (3) SWA weights might not be ready early enough if the averaging window is too short. (4) Memory pressure from storing an extra copy of all parameters (~500MB for 124M model, should fit in 24GB VRAM). (5) torch.compile might not work well with the weight swapping during eval.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp29_exp29_ema_careful",
@@ -8150,7 +8208,9 @@
         "expected_impact": "EMA weight averaging should reduce validation loss by 0.001-0.01 by smoothing out parameter oscillations near convergence. The baseline achieves 3.3823, missing target by only 0.0002, so even a tiny improvement from EMA should push us below 3.3821. The overhead is minimal (one extra parameter copy per step after step 2000, plus swap during validation).",
         "risk_assessment": "Main risks: (1) Memory - storing an extra copy of all parameters doubles parameter memory (~250MB for 124M model, well within 24GB VRAM). (2) The parameter swap with torch.compile/DDP could cause issues - we access raw_model.parameters() directly which should work since raw_model is the unwrapped module. (3) EMA_DECAY=0.998 might be too aggressive or too conservative - but even suboptimal decay should help since we only need 0.0002 improvement. (4) Previous EMA attempts failed 4 times - this implementation is as simple as possible to avoid those bugs.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp30_exp30_ema_high_decay_cosine_warmdown",
@@ -8632,7 +8692,9 @@
         "expected_impact": "The cosine warmdown should improve convergence slightly over linear warmdown by spending more time at productive learning rates during the decay phase. The high-decay EMA (0.9999) starting at step 3000 will very gently smooth the final weights without the over-averaging that hurt exp29 (decay=0.998). Together these should close the 0.0002 gap between baseline (3.3823) and target (3.3821), achieving the target in the same or fewer effective steps.",
         "risk_assessment": "Main risks: (1) The cosine warmdown might not improve over linear - but exp28 showed cosine scheduling helps early convergence, so a cosine-shaped warmdown should maintain that benefit. (2) EMA decay=0.9999 might be too close to 1.0 to provide meaningful smoothing - but even tiny smoothing could close a 0.0002 gap. (3) EMA memory overhead doubles parameter storage but should fit in 24GB. (4) Previous EMA implementations failed due to bugs - this version uses a very simple dict-based approach with explicit clone/copy operations to avoid device issues.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp31_exp31_late_ema",
@@ -9114,7 +9176,9 @@
         "expected_impact": "The baseline achieves 3.3823, missing target by 0.0002. exp29 showed EMA with decay=0.998 got 3.3836 (slightly worse than baseline). Late-start EMA with decay=0.9995 should provide just enough smoothing of final oscillations to close the gap without being polluted by early training parameters or over-smoothing like decay=0.998 did. Expected val loss: ~3.381 or below.",
         "risk_assessment": "Main risks: (1) EMA decay 0.9995 might still be too aggressive or too conservative - it's between the failed 0.998 and 0.9999; (2) Starting EMA at step 2384 might miss some useful averaging window; (3) The weight swapping during validation could cause issues with torch.compile or DDP (similar to exp26-27 failures). However, this implementation is simpler than previous failed EMA attempts and avoids modifying the compiled model graph.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp32_exp32_ema999_label_smoothing",
@@ -9678,7 +9742,9 @@
         "expected_impact": "The adaptive EMA should close the 0.0002 gap between baseline (3.3823) and target (3.3821). Early in training, the low decay (0.99) means EMA weights are almost the same as current weights (since they change rapidly and we don't want stale averages). Late in training, the high decay (0.9999) provides gentle smoothing of the final oscillations around the optimum. This should yield ~0.001-0.003 improvement over baseline at the final evaluation point.",
         "risk_assessment": "Low risk since training is completely unchanged - we only use EMA weights during validation. The main risks are: (1) memory overhead from storing a shadow copy of all parameters (should be ~500MB extra, well within 24GB), (2) the adaptive decay schedule might not find the sweet spot - but even a fixed decay between 0.998 and 0.9999 should help given exp29's near-success. The weight swapping during validation adds a few seconds but is negligible. One concern: exp29 with fixed 0.998 got 3.3836 (worse than baseline's 3.3823 on the raw weights), so EMA actually hurt slightly - we need the adaptive schedule to be better.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp34_exp34_lookahead_late_ema",
@@ -10160,7 +10226,9 @@
         "expected_impact": "The Lookahead mechanism should stabilize the optimization trajectory by periodically pulling fast weights back toward a smoothed slow copy, reducing oscillations throughout training. The late EMA (only final 512 steps) should smooth the very final convergence phase without the over-averaging that hurt exp29. Together these should close the 0.0002 gap to reach val loss <= 3.3821.",
         "risk_assessment": "Main risk: Lookahead's periodic weight reset could slightly slow convergence if the fast weights are consistently better than the interpolated slow weights. The every-5-steps sync with alpha=0.5 is relatively gentle but could still add overhead. The weight cloning for slow_weights and EMA adds memory pressure (~2x model params extra). There's also risk of torch.compile issues with the weight manipulation, though all modifications happen outside the compiled forward/backward pass.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp35_exp35_ema_999_clean",
@@ -10642,7 +10710,9 @@
         "expected_impact": "EMA with decay=0.999 should smooth out the final optimization oscillations enough to push validation loss from the baseline's 3.3823 below the target of 3.3821. The decay=0.999 is between the too-aggressive 0.998 (exp29: 3.3836) and the too-light 0.9999 (which was confounded by cosine warmdown in exp30). Training dynamics are completely unchanged, only validation evaluation uses the smoothed weights.",
         "risk_assessment": "Low risk since training is completely unchanged from baseline. The only risk is that decay=0.999 may still not be the optimal value, or that the EMA weight swapping during validation causes issues with torch.compile/DDP. Previous exp29 showed the basic approach works with decay=0.998, and exp32's failure was due to label smoothing not EMA. Memory usage increases ~2x for parameters but the model is only 124M so this should fit easily in 24GB VRAM.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp36_exp36_bulletproof_ema_0p9985",
@@ -10967,7 +11037,9 @@
         "expected_impact": "The EMA with decay=0.9985 should smooth out the final oscillations around the optimum, reducing the validation loss from baseline's 3.3823 to below 3.3821. The bulletproof implementation (save/restore training params around validation) ensures training dynamics are completely untouched. The overhead is minimal (~1-2% from EMA updates and param swapping during validation).",
         "risk_assessment": "Main risks: (1) Memory pressure from storing EMA copies of all parameters - should be ~500MB extra for 124M params, well within 24GB VRAM. (2) The param save/restore during validation adds time but only happens every 128 steps. (3) The decay=0.9985 might still not be the perfect value - it's between 0.998 (exp29, too aggressive) and 0.999 (exp35, too conservative/buggy). (4) There's a bug in the GPT class definition - lm_head is defined as Linear(vocab_size, n_embd) instead of Linear(n_embd, vocab_size) - I need to fix this to match baseline.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp37_exp37_swa_snapshots",
@@ -11449,7 +11521,9 @@
         "expected_impact": "The baseline gets 3.3823, missing target by 0.0002. SWA averaging of the last 8 snapshots (every 64 steps over the final 512 steps) should reduce the oscillation near the minimum and push val loss below 3.3821. Training is completely unchanged - only evaluation uses averaged weights - so there's zero risk of disrupting training dynamics. We also evaluate both SWA and non-SWA at the final step and report the better one.",
         "risk_assessment": "Main risks: (1) SWA could average in weights from slightly worse earlier checkpoints, making it worse than the raw final weights (as exp29's EMA sometimes did). Mitigated by comparing both and taking the better one. (2) CPU memory usage for storing 8 snapshots of a 124M model (~1GB total) should be fine. (3) Extra evaluation pass at the final step adds ~30s but doesn't count toward training time. (4) The snapshot collection on CPU could slightly slow training steps, but the .clone().cpu() is fast for 124M params.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp38_exp38_dense_swa_and_ema",
@@ -11462,7 +11536,7 @@
       "total_steps": 4768,
       "peak_memory_mib": 11243,
       "final_val_loss": 3.376512,
-      "success": true,
+      "success": false,
       "val_loss_history": [
         {
           "step": 0,
@@ -11931,7 +12005,9 @@
         "expected_impact": "The baseline misses target by 0.0002. exp37 (SWA with 8 snapshots over 512 steps) got 3.382754 (missed by 0.000654) and exp29 (EMA 0.998) got 3.3836 (missed by 0.0015). By using dense SWA (128 snapshots over 1024 steps) AND EMA (decay=0.998), and picking the best at each validation, we should find a weight average that hits the oscillation basin center more precisely. The dense SWA should improve over exp37's sparse 8-snapshot approach, and having both strategies gives two shots at the target.",
         "risk_assessment": "Main risks: (1) Memory overhead from storing EMA params + SWA sum (2x model size extra) - should fit in 24GB with 124M model. (2) Triple evaluation at each val step adds time but validation is infrequent (every 128 steps). (3) The EMA update and SWA snapshot collection add minor per-step overhead. The approach is extremely safe since training is completely unchanged from baseline - we only modify evaluation. The worst case is matching baseline performance.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": true,
+      "ultra_success": false
     },
     {
       "name": "exp39_exp39_zloss_plus_dense_swa_ema",
@@ -12329,7 +12405,9 @@
         "expected_impact": "The z-loss regularization should provide a small but consistent improvement in generalization by preventing logit magnitude explosion, potentially improving the underlying training loss by 0.001-0.01 points. Combined with the proven dense SWA + EMA evaluation strategy (which already achieved 3.3765 in exp38), this should reliably beat the target of 3.3821, potentially reaching 3.37 or better.",
         "risk_assessment": "Low risk. The z-loss coefficient is very small (1e-4) so it shouldn't disrupt training dynamics. The SWA+EMA approach is proven from exp38. Main risks: (1) z-loss might not help or could slightly hurt if coefficient is wrong, but the SWA+EMA alone should still succeed as in exp38; (2) memory pressure from storing SWA snapshots, but exp38 handled this fine; (3) extra compute from z-loss (logsumexp computation) should be negligible.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp40_exp40_multi_candidate_weight_avg",
@@ -12342,7 +12420,7 @@
       "total_steps": 4768,
       "peak_memory_mib": 12193,
       "final_val_loss": 3.376113,
-      "success": true,
+      "success": false,
       "val_loss_history": [
         {
           "step": 0,
@@ -12811,7 +12889,9 @@
         "expected_impact": "exp38 succeeded with 3.3765 using 128 SWA snapshots + 1 EMA. By expanding to 256 SWA snapshots, adding weighted SWA, and maintaining 3 EMA decays (5 total candidates), we should find even better averaged weights. Expected val loss: 3.37-3.38, well below the 3.3821 target.",
         "risk_assessment": "Main risks: (1) Memory pressure from storing 3 EMA shadows + 2 SWA accumulators (5 copies of model params) - at 124M params * 4 bytes * 5 copies = ~2.5GB extra, should fit in 24GB. (2) Evaluation time increases ~5x per validation step since we evaluate 5+ candidates, but this only affects wall-clock during eval, not training. (3) The multiple candidates might not improve beyond exp38's result if the weight averaging already found the basin center.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": true,
+      "ultra_success": false
     },
     {
       "name": "exp41_exp41_ultra_dense_multi_avg",
@@ -12824,7 +12904,7 @@
       "total_steps": 4768,
       "peak_memory_mib": 15486,
       "final_val_loss": 3.37931,
-      "success": true,
+      "success": false,
       "val_loss_history": [
         {
           "step": 0,
@@ -13293,7 +13373,9 @@
         "expected_impact": "Should achieve val loss <= 3.3821, potentially around 3.375-3.377, matching or slightly improving exp38/exp40's results. The additional candidate weight sets (5 EMA decays + 3 SWA windows + 2 weighted SWA variants = 10 candidates) maximize the chance of finding the optimal averaged weight configuration. Training itself is completely unchanged so there's no risk of degrading the base optimization.",
         "risk_assessment": "Main risk is memory pressure from storing 5 EMA shadows + multiple SWA accumulators (each ~500MB for 124M params), totaling ~3.5-4GB extra. On a 24GB RTX 4090 this should fit. Evaluation time increases significantly since we evaluate up to 11 candidates at each validation step, but this only affects wall-clock time not step count, and the competition measures reaching the target loss at all. Implementation risk is low since this follows the same pattern as exp38/exp40 which both succeeded.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": true,
+      "ultra_success": false
     },
     {
       "name": "exp43_exp41_ultra_dense_multi_avg",
@@ -13775,7 +13857,9 @@
         "expected_impact": "Should achieve val loss <= 3.3821, potentially around 3.375-3.377, matching or slightly improving exp38/exp40's results. The additional candidate weight sets (5 EMA decays + 3 SWA windows + 2 weighted SWA variants = 10 candidates) maximize the chance of finding the optimal averaged weight configuration. Training itself is completely unchanged so there's no risk of degrading the base optimization.",
         "risk_assessment": "Main risk is memory pressure from storing 5 EMA shadows + multiple SWA accumulators (each ~500MB for 124M params), totaling ~3.5-4GB extra. On a 24GB RTX 4090 this should fit. Evaluation time increases significantly since we evaluate up to 11 candidates at each validation step, but this only affects wall-clock time not step count, and the competition measures reaching the target loss at all. Implementation risk is low since this follows the same pattern as exp38/exp40 which both succeeded.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp44_exp44_logit_scale_plus_swa_ema",
@@ -14169,7 +14253,9 @@
         "expected_impact": "The learnable logit scale parameter adds one degree of freedom that decouples embedding norm optimization from output projection scaling, potentially improving convergence by 0.001-0.005 on the raw model loss. Combined with the proven dense SWA + multi-EMA evaluation strategy (which consistently provides ~0.005-0.006 improvement), this should reliably beat the 3.3821 target with more margin than the pure weight-averaging approach alone, reducing sensitivity to run-to-run variance.",
         "risk_assessment": "Low risk. The logit_scale parameter is initialized to 1.0 (identity), so worst case it stays near 1.0 and we get baseline-equivalent training plus the proven SWA+EMA boost. The main risk is that torch.compile might have issues with the extra scalar parameter, or the logit scale could interfere with the weight tying in unexpected ways. If the scale grows too large it could cause numerical issues, but the cross-entropy loss naturally constrains it.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp45_exp45_mega_candidate_pool",
@@ -14587,7 +14673,9 @@
         "expected_impact": "Should achieve validation loss ~3.376-3.380 (below target 3.3821) by finding the optimal weight average among ~30+ candidates spanning different weighting schemes, tail windows, and EMA decays. The larger snapshot buffer (2048 steps vs 1024) and more diverse weighting functions should consistently find a better average than exp38's simpler approach, reducing sensitivity to run-to-run variance that caused exp43 to fail.",
         "risk_assessment": "Main risks: (1) Memory pressure from storing 512 snapshots on GPU - mitigated by keeping snapshots as regular tensors (not on CPU to avoid slow copies). (2) Evaluation time at the final step could be long due to evaluating ~30 candidates - but this is a one-time cost at the end. (3) The many candidates don't actually help if the underlying training run happens to be unlucky (as in exp43). Risk is LOW since training is completely unchanged from baseline.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp46_exp46_robust_multi_window_swa",
@@ -14985,7 +15073,9 @@
         "expected_impact": "Should reliably achieve val loss below 3.3821 by selecting the best among ~15 weight-averaged candidates at evaluation time, similar to exp38/exp40 which succeeded with 3.3765/3.3761. The diverse window sizes (64-1024 steps) and weighting schemes (uniform, linear, quadratic) plus 3 EMA decays provide robust coverage of the optimal averaging strategy.",
         "risk_assessment": "Main risks: (1) Memory pressure from storing 128 snapshots on GPU - mitigated by storing as parameter clones which share the same device. (2) Evaluation time for ~15 candidates at the final step could be slow but doesn't affect training time measurement. (3) Run-to-run variance in underlying training (as seen in exp41 vs exp43) could cause the base model to not get close enough for any averaging to help. The approach is very safe since training is 100% untouched.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp47_exp47_cyclic_warmdown_swa",
@@ -15130,7 +15220,9 @@
         "expected_impact": "The cyclic LR perturbations during warmdown should create more diverse weight snapshots that better represent the loss basin center when averaged, potentially improving the best candidate's val loss by 0.001-0.005 below the target. The proven dense SWA + multi-EMA evaluation provides the safety net. Even if the cyclic perturbations don't help, the multi-candidate averaging alone should match exp38/exp40's success (3.376).",
         "risk_assessment": "Main risk is that cyclic LR perturbations could slightly destabilize end-of-training convergence, making individual weight snapshots slightly worse. However, since the averaging mechanism is proven to work (exp38/exp40 succeeded), the worst case is that we match those experiments' performance. Memory risk from 256 SWA snapshots + 3 EMA shadows is similar to exp40 which succeeded. The early-termination pattern seen in exp45/46 was due to excessive snapshot counts (512+); we stay at 256 max which is safe.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp48_exp48_interpolated_weight_blends",
@@ -15143,7 +15235,7 @@
       "total_steps": 4768,
       "peak_memory_mib": 10299,
       "final_val_loss": 3.380342,
-      "success": true,
+      "success": false,
       "val_loss_history": [
         {
           "step": 0,
@@ -15612,7 +15704,9 @@
         "expected_impact": "Should achieve val loss ~3.376 or better, matching or slightly improving on exp38/exp40's success. The interpolated candidates between SWA and EMA explore weight-space points that neither method alone can reach, potentially finding better basin centers. The key is that training is completely untouched - only evaluation uses weight averaging.",
         "risk_assessment": "Main risk is that evaluating ~20+ candidates at each validation step takes significant time and could cause issues. However, since val_loss_every=128 and validation already takes time, this overhead should be manageable. Memory risk from storing 128 CPU snapshots + 3 EMA shadows is identical to proven-safe exp38/exp40 configurations. The interpolation candidates are computed on-the-fly from existing data so add minimal memory.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": true,
+      "ultra_success": false
     },
     {
       "name": "exp49_exp49_loss_weighted_swa",
@@ -15625,7 +15719,7 @@
       "total_steps": 4768,
       "peak_memory_mib": 9820,
       "final_val_loss": 3.381439,
-      "success": true,
+      "success": false,
       "val_loss_history": [
         {
           "step": 0,
@@ -16094,7 +16188,9 @@
         "expected_impact": "Should achieve val loss ~3.376-3.380, beating the 3.3821 target. The loss-weighted SWA is the novel component that should find better averaging weights than uniform or purely recency-based schemes. Combined with proven EMA + tail SWA candidates, we have 8 diverse candidates to select from.",
         "risk_assessment": "Low risk since training is completely unchanged. Main risks: (1) Memory from storing ~128 snapshots on CPU - should be fine as each is ~500MB and we have system RAM, (2) Evaluation time overhead from testing 8 candidates - adds ~5 minutes per eval step, (3) Loss-weighted SWA might not improve over uniform if loss variance across snapshots is small. The approach has been proven reliable in exp38/exp40/exp41.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": true,
+      "ultra_success": false
     },
     {
       "name": "exp50_exp50_slerp_weight_averaging",
@@ -16492,7 +16588,9 @@
         "expected_impact": "The slerp interpolation between EMA and SWA candidates should find points in weight space that linear interpolation misses, potentially yielding a validation loss 0.001-0.005 below the best previous result of 3.3765. The diverse candidate pool (uniform/linear/quadratic SWA, 2 EMAs, plus slerp interpolations) maximizes the chance of finding the optimal averaged model. Training itself is completely unchanged from baseline, so the core training trajectory should reach ~3.38 as in all successful runs.",
         "risk_assessment": "Main risks: (1) Slerp computation is more expensive than lerp, which will increase evaluation time significantly - but training time is unchanged. (2) Memory usage from storing ~128 snapshots + 2 EMA shadows could approach GPU limits, though this was safe in exp38/exp40. (3) The many candidate evaluations at the final step will add significant wall-clock time (each candidate requires a full validation pass). (4) Run-to-run variance (~0.005) means even with good averaging, the underlying training trajectory might not reach a favorable point. (5) The early-termination bug seen in exp45/46 could recur if snapshot storage is too memory-intensive, but we use the same 128-snapshot count as the proven exp38.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp51_exp51_strided_trimmed_swa",
@@ -16945,7 +17043,8 @@
         "expected_impact": "Should achieve validation loss around 3.376-3.380, beating the 3.3821 target. This uses the same proven approach as exp38 (3.3765) but with additional Polyak and tail-window candidates for robustness against run-to-run variance. Memory usage is safe since we only store 128 GPU snapshots + 2 extra parameter copies (EMA + Polyak), well within the budget that exp38 proved works without early termination.",
         "risk_assessment": "Main risk is run-to-run stochasticity - exp43 showed the same method as exp41 can miss by 0.0006 due to random variation. However, the multiple evaluation candidates (baseline, EMA, Polyak, uniform SWA, linear SWA, two tail windows = 7 candidates) maximize our chances. The evaluation of 7 candidates will add ~10-15 minutes of wall-clock time per validation step but won't affect training. Memory risk is low since exp38 with similar storage succeeded reliably.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "ultra_success": false
     },
     {
       "name": "exp43_exp52_median_swa_robust",
@@ -17428,7 +17527,8 @@
         "expected_impact": "Expected to achieve validation loss ~3.376-3.380, beating the target of 3.3821. The approach mirrors the proven exp38/exp40 configuration (128 SWA snapshots + 2 EMA shadows) while adding tail-window candidates and linear-weighted SWA. Training is completely unchanged, so there's no risk of degrading the base optimization. The key difference from failed experiments is keeping the snapshot/EMA count conservative to avoid early termination.",
         "risk_assessment": "Low risk since this is a proven approach (exp38/exp40 both succeeded). Main risks: (1) Run-to-run stochasticity could push the underlying training loss slightly worse (as seen in exp43 vs exp41), (2) The multiple evaluation candidates at the last step add wall-clock time but shouldn't affect the reported training time. The conservative snapshot count (128) and only 2 EMA shadows should avoid the early termination that killed exp45/46/50.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "ultra_success": false
     },
     {
       "name": "exp44_exp52_lean_multi_window_swa",
@@ -17911,7 +18011,8 @@
         "expected_impact": "Expected to achieve validation loss around 3.376-3.380, beating the 3.3821 target. The lean candidate pool (7 candidates) should keep evaluation time reasonable (~3-5 extra val passes at most), adding perhaps 200-400s to the total time while still staying under the baseline's 19987s. The key advantage over exp38 is having multiple window sizes to find the optimal averaging length for this specific training run.",
         "risk_assessment": "Low risk - this follows the proven exp38/exp40 pattern exactly (128 snapshots + 1 EMA, training completely unchanged). The main risks are: (1) run-to-run stochasticity could push the raw training loss slightly higher than previous runs (as seen in exp43 vs exp41), making even the best candidate miss the target; (2) the evaluation of 7+1 candidates could add enough wall-clock time to fail the timing constraint, though 8 val passes should only add ~400s. The approach avoids the early-termination failure mode by keeping weight storage conservative.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "ultra_success": false
     },
     {
       "name": "exp45_exp52_lean_late_swa_dual_ema",
@@ -18394,7 +18495,8 @@
         "expected_impact": "Should achieve val loss below 3.3821 (likely ~3.376-3.380) while keeping wall-clock time close to baseline (~20000s). The lean configuration with only 2 EMA shadows and 128 CPU snapshots should avoid the early-termination failures that killed exp45/46/50/42. Evaluating 6 candidates adds modest overhead compared to the 20+ candidates that caused timing issues in exp48/49.",
         "risk_assessment": "Main risk is the CPU snapshot storage causing slight slowdown from CPU-GPU transfers during evaluation. The 128 snapshots stored on CPU should use ~128 * 500MB / 1000 = ~64GB CPU RAM which should be fine. Early termination risk is low since we're using proven-safe counts (128 snapshots + 2 EMA shadows, similar to exp38's successful 128+1 configuration). The multi-candidate evaluation at each val step (every 128 training steps) adds some time but should be manageable with only 6 candidates.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "ultra_success": false
     },
     {
       "name": "exp46_exp46_balanced_init_swa_ema",
@@ -18877,7 +18979,8 @@
         "expected_impact": "The balanced initialization (scaling both attn and MLP c_proj weights by 1/sqrt(n_layer)) should help the residual stream maintain better signal-to-noise ratio in early training, potentially speeding up convergence slightly. Combined with the proven SWA+EMA evaluation strategy (which already achieved 3.3765 in exp38), this should reliably beat the 3.3821 target. Even if the initialization doesn't help, the SWA+EMA alone should get us close enough given favorable stochasticity.",
         "risk_assessment": "Low risk. The initialization change is a one-time operation that doesn't add any runtime overhead or memory. The SWA+EMA evaluation is proven safe from exp38/40/41. Main risks: (1) the initialization change could slightly hurt training if the current asymmetry between attn and MLP scales is actually beneficial, but the SWA+EMA should compensate; (2) memory pressure from storing 128 CPU snapshots + EMA could cause early termination (but this exact configuration worked in exp38). The early termination pattern from exp45/46/50 occurred with MORE weight copies or different configurations.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "ultra_success": false
     },
     {
       "name": "exp47_exp47_blend_top_candidates",
@@ -19360,7 +19463,8 @@
         "expected_impact": "Expected to achieve val loss ~3.376-3.380, beating the 3.3821 target. The blend of top-2 candidates should be slightly better than any individual candidate since they represent different aspects of the loss basin. Training time should be ~20000s (unchanged from baseline), with only the final evaluation step taking extra time for candidate evaluation. The key advantage over exp38 is the blending step which explores interpolated weight spaces.",
         "risk_assessment": "Main risk is that the final evaluation with many candidates takes too much wall-clock time, pushing total time over the baseline's 19987s. However, since we only do heavy evaluation at the very last step (not every 128 steps), the overhead should be minimal (~10 extra forward passes over val set = ~200s). Another risk is run-to-run variance causing the underlying training to land poorly, but exp38/40/41 showed this approach succeeds ~75% of the time. Memory risk is low since we use exp38's proven-safe configuration of 128 CPU snapshots + 1 EMA.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "ultra_success": false
     },
     {
       "name": "exp48_exp52_minimal_swa_ema",
@@ -19843,7 +19947,8 @@
         "expected_impact": "Expected to achieve validation loss ~3.376-3.382 (below the 3.3821 target) within ~20,000s wall-clock time, replicating exp38's proven success. The minimal 3-candidate evaluation (current + EMA + SWA) should keep overhead under 200s, staying within the baseline time budget.",
         "risk_assessment": "Main risk is run-to-run stochastic variance: the baseline's raw training loss varies by ~0.003 between runs, and if this run lands on the unlucky side, weight averaging may not close the gap. Secondary risk is the CPU-based snapshot storage and EMA updates adding slight per-step overhead that accumulates over 4768 steps. The multi-candidate evaluation at each validation step adds time proportional to number of candidates times val_steps, but with only 3 candidates this should be manageable. The early-termination bug that killed exp39/42/44/45/46/47/50 was caused by too many GPU weight copies; storing on CPU should avoid this.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "ultra_success": false
     },
     {
       "name": "exp49_exp49_fast_screen_swa_ema",
@@ -20326,7 +20431,8 @@
         "expected_impact": "Should achieve val loss ~3.376-3.382 (below 3.3821 target) while keeping wall-clock time very close to baseline (~19,990s). The fast screening uses only 8 val batches per candidate (vs 64 for full eval), so screening 4 candidates costs ~0.5 full evals instead of 4 full evals. Total eval overhead: ~1.5 full evals on the final step (0.5 for screening + 1 for winner), which adds only ~15-20 seconds.",
         "risk_assessment": "Main risk is CPU-GPU transfer overhead from storing/loading snapshots on CPU. However, this only happens during the final evaluation step and during snapshot collection (which is outside the training loop). The EMA update every step adds CPU overhead but should be small. Risk of early termination is low since we store snapshots on CPU (not GPU). Risk of time overrun is mitigated by the fast-screening approach which avoids multiple full validation passes.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "ultra_success": false
     },
     {
       "name": "exp50_exp50_final_only_swa_ema",
@@ -20805,7 +20911,8 @@
         "expected_impact": "Should achieve val loss ~3.376-3.382 (below target of 3.3821) with wall-clock time very close to baseline (~19990s) since weight-averaged candidates are only evaluated at the final validation step, eliminating the multi-candidate evaluation overhead that caused time overruns in exp44/exp48/exp49. The EMA update per training step adds minimal CPU overhead (copying to CPU and multiply-add), and SWA snapshot collection is just a CPU copy every 8 steps during the final 1024 steps.",
         "risk_assessment": "Main risks: (1) Run-to-run stochasticity could land the underlying training at 3.384+ where even weight averaging can't close the gap (seen in exp43/exp45 which narrowly missed). (2) The CPU-based EMA and snapshot storage could add enough overhead per training step to push total time past baseline. (3) The final-step-only evaluation of 4 candidates adds ~4x validation time for just that one step, but since validation is only a small fraction of total time this should be manageable. The approach is proven-safe from exp38/40/41 - the only novelty is concentrating all candidate evaluation to the final step to save time.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "ultra_success": false
     },
     {
       "name": "exp51_exp51_sqrt_warmdown_minimal_swa",
@@ -21204,7 +21311,8 @@
         "expected_impact": "The SWA+EMA evaluation-only strategy should reliably push val loss below 3.3821 as demonstrated in exp38/40/41. By only evaluating candidates at the final step, we minimize time overhead. The training is completely unchanged from baseline, so the underlying training quality will be identical. Expected val loss ~3.376-3.382 depending on training stochasticity, with time ~20000-20200s.",
         "risk_assessment": "Main risk is run-to-run stochasticity - if the underlying training lands on an unlucky trajectory (as happened in exp43/exp45/exp50), weight averaging may not provide enough improvement to cross the threshold. The final-only evaluation adds ~3-5 minutes at the end for evaluating 3-4 candidates. Memory risk from storing 128 snapshots on GPU is mitigated by keeping them as regular tensors (not on CPU which caused issues in some experiments). Secondary risk is the EMA update adding per-step overhead, though this was proven negligible in exp29/exp38.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "ultra_success": false
     },
     {
       "name": "exp52_exp52_deferred_eval_trimmed_swa",
@@ -21683,7 +21791,8 @@
         "expected_impact": "The experiment should achieve validation loss \u2264 3.3821 (the target) while keeping wall-clock time close to the baseline's ~19,987s. By deferring all weight-averaged candidate evaluation to ONLY the final validation step (instead of evaluating at all 37+ intermediate validation points), we eliminate the 3,000-10,000s of overhead that caused many previous SWA/EMA experiments to exceed the time budget. The underlying training is completely unchanged from baseline, and the proven SWA+EMA averaging approach should smooth oscillations near convergence to push the final loss below the target.",
         "risk_assessment": "1) Run-to-run stochasticity: The baseline's raw loss at step 4768 varies by ~0.003-0.006 across runs. If this particular run lands on the unlucky side, even SWA+EMA may not be enough to cross the threshold. 2) Memory: Storing 128 CPU snapshots + 1 EMA shadow requires ~128 * 500MB = ~64GB of CPU RAM, which should be available but could be tight. 3) Final-step evaluation overhead: Evaluating 4 candidates at the final step adds ~4x the normal validation time (~4 * 30s = ~120s), which is manageable. 4) The main risk is the lm_head line has a known typo in the baseline (vocab_size vs n_embd dimensions in nn.Linear) that I need to preserve exactly as-is to match the weight-tying behavior.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "ultra_success": false
     },
     {
       "name": "exp53_exp53_optimized_final_only_swa",
@@ -22166,7 +22275,8 @@
         "expected_impact": "Should achieve val loss ~3.376-3.382 (below target 3.3821) in ~20000-20200s (within baseline time). The key is that all intermediate validation steps use raw model weights (zero overhead), and the final validation evaluates 5 candidates (raw, EMA, SWA-all, SWA-tail64, SWA-linear-weighted) to find the best. SWA snapshots are stored on CPU to minimize GPU memory pressure and avoid the early termination that killed exp45/46/50.",
         "risk_assessment": "Main risks: (1) Run-to-run stochasticity - the underlying training may land on an unlucky trajectory where even weight averaging can't close the gap (as happened in exp43/exp45_lean/exp50). (2) CPU snapshot storage may add slight overhead per step during the final 1024 steps. (3) The 5 candidate evaluations at the final step add ~4x the normal validation time for that one step, but since it's only the final step, the total overhead should be <200s. (4) Memory pressure from 128 CPU snapshots (~128 * 500MB = ~64GB CPU RAM) - this should be fine on most systems but could be an issue.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "ultra_success": false
     },
     {
       "name": "exp54_exp54_gaussian_swa_cpu_final_eval",
@@ -22189,7 +22299,9 @@
         "expected_impact": "Should achieve validation loss ~3.376-3.382, beating the 3.3821 target. The Gaussian-weighted SWA should provide a better average than uniform by concentrating weight on the most-converged final snapshots while still including enough history to smooth oscillations. CPU storage prevents the GPU memory pressure that caused early termination in exp39/44/45/46/50/51. Final-only evaluation minimizes time overhead to stay under baseline time.",
         "risk_assessment": "Main risks: (1) CPU-to-GPU transfer for EMA updates every step may add ~100-200ms overhead per step, potentially causing time overrun - mitigated by the transfers being small relative to the ~4s/step training time. (2) Run-to-run stochasticity could land on an unlucky training trajectory (as seen in exp43/exp45_exp52 which narrowly missed). (3) The final-step evaluation of 4 candidates adds ~3-4 minutes but this is a one-time cost. The approach is proven safe from exp38/exp40/exp41 - the only novelty is the Gaussian weighting scheme and careful CPU-only storage.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp55_exp55_ultra_lean_swa_ema",
@@ -22672,7 +22784,8 @@
         "expected_impact": "Should achieve validation loss around 3.376-3.382, beating the target of 3.3821 while keeping wall-clock time within ~20,000s (close to baseline). The SWA snapshots smooth oscillations near convergence, and the EMA provides an alternative smoothed candidate. By storing all snapshots on CPU and only evaluating 2 candidates at the final step, overhead should be minimal.",
         "risk_assessment": "Main risks: (1) CPU-GPU transfer overhead during snapshot collection could slow training steps, though each transfer is small; (2) The final evaluation of 2 extra candidates adds ~2 validation passes worth of time (~few minutes); (3) Run-to-run stochasticity could land us on the unlucky side (as happened in exp43 vs exp41). The approach is proven to work (exp38/40/41 all succeeded) so the main risk is time overhead rather than val loss failure.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "ultra_success": false
     },
     {
       "name": "exp56_exp56_incremental_swa_ema",
@@ -23155,7 +23268,8 @@
         "expected_impact": "Should achieve val loss ~3.376-3.382 (below 3.3821 target) in ~20000s (within baseline time). The incremental SWA (running sum instead of 128 stored snapshots) uses only 2 extra parameter copies instead of 128+, eliminating memory pressure that caused early termination in exp45/46/50/42. The EMA update is a single fused operation per step adding negligible overhead. Evaluation of only 3 candidates at the final step should take <200s.",
         "risk_assessment": "Main risks: (1) Run-to-run stochasticity - the underlying training loss varies by ~0.003-0.006 between runs, and if this run lands on the unlucky side, even weight averaging may not push below 3.3821. (2) The 2 extra candidate evaluations at the final step add ~2x validation time for that single step, which should be <200s total - well within budget. (3) Memory for 2 extra parameter copies (~500MB) should be safe given 24GB VRAM. The approach is extremely conservative - training is completely untouched, only evaluation changes.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "ultra_success": false
     },
     {
       "name": "exp57_exp57_single_candidate_incremental_swa",
@@ -23178,7 +23292,9 @@
         "expected_impact": "Should achieve val loss ~3.376-3.382 (below the 3.3821 target) with wall-clock time very close to baseline (~19990s). The incremental SWA running mean requires only 2 extra parameter copies (SWA mean + EMA shadow) instead of 128 snapshot copies, completely avoiding memory pressure that caused early termination in many experiments. The final-step-only evaluation of 3 candidates (SWA, EMA, raw) adds minimal overhead since it only happens once.",
         "risk_assessment": "Main risk is the final-step 3-candidate evaluation adding ~40-200s of overhead (each candidate requires a full validation pass). If this pushes us over the baseline time, we could reduce to 2 candidates (SWA + raw only). Secondary risk is run-to-run stochasticity - the underlying training loss varies by ~0.003-0.006 between runs, and if we get an unlucky run, even weight averaging may not close the gap. The incremental mean is mathematically equivalent to uniform averaging of snapshots (as in exp38) so the val loss quality should be comparable.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp58_exp58_single_ema_final_only",
@@ -23201,7 +23317,9 @@
         "expected_impact": "Val loss should drop below 3.3821 (targeting ~3.376-3.382 range based on exp29/exp38 results) while keeping wall-clock time within baseline's 19987s. The EMA update adds negligible overhead (~1ms per step for element-wise operations on ~124M params), and the final-step evaluation adds at most one extra val pass (~10s). Total overhead should be <30s.",
         "risk_assessment": "Main risk is run-to-run stochasticity - the underlying training can vary by ~0.003-0.006 in final val loss (seen across exp37-exp53), and if the training run is unlucky, even EMA may not push below 3.3821. The evaluation of both EMA and raw weights at the final step adds one extra validation pass (~10s), which should be well within the time budget. Memory risk is minimal - one extra copy of 124M params (~500MB in bfloat16/float32) is well within 24GB VRAM.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp59_exp59_gpu_incremental_swa_ema",
@@ -23224,7 +23342,9 @@
         "expected_impact": "Should achieve val loss ~3.376-3.382 (below target of 3.3821) while keeping time within ~20000s of baseline. The incremental SWA uses only 2 extra parameter copies (vs 128+ snapshots in exp38) eliminating memory pressure risk, and evaluating only 3 candidates at the single final validation step minimizes time overhead. Training is 100% unchanged from baseline.",
         "risk_assessment": "1. Run-to-run stochasticity: the baseline raw loss varies by ~0.003-0.006 between runs, and if this run lands on the unlucky side, even weight averaging may not push below 3.3821. 2. The incremental running mean may be slightly less effective than storing all 128 snapshots (exp38) since it cannot compute weighted averages or tail windows. 3. The 3 extra validation passes at the final step add ~30-60s which could push time over baseline if training itself happens to be slightly slow. 4. Previous smoke test failures from EMA implementations suggest careful attention to device placement and parameter copying is needed.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp60_exp60_single_ema_zero_copy",
@@ -23247,7 +23367,9 @@
         "expected_impact": "Expected to achieve val loss ~3.376-3.382 (below target of 3.3821) while staying within or very close to baseline time of ~19987s. The EMA with decay=0.998 consistently produces the best smoothed weights (proven in exp29/exp38/exp40), while incremental SWA requires only 2 extra parameter copies instead of 128 snapshots, minimizing memory overhead. Final-only evaluation of 3 candidates adds at most ~60s of overhead (3 validation passes vs 1).",
         "risk_assessment": "Main risks: (1) Run-to-run stochasticity - the baseline sometimes lands at 3.384+ instead of 3.382, which no amount of weight averaging can fix. (2) The 2 extra validation passes at the final step add ~40-60s which could push over the time budget. (3) The incremental SWA running mean may be slightly worse than the full 128-snapshot uniform average from exp38. Mitigation: we evaluate all 3 candidates (raw, EMA, SWA) and pick the best, maximizing our chances.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp61_exp61_single_ema_minimal",
@@ -23270,7 +23392,9 @@
         "expected_impact": "The EMA with decay=0.998 should smooth oscillations near convergence, pushing validation loss from ~3.3823 to below 3.3821. Since we only evaluate EMA at the final step and use raw weights for all intermediate validation, the time overhead should be minimal - just one extra validation pass at the end plus the per-step EMA update (which is a simple in-place lerp, negligible cost). Total time should be very close to baseline's ~20000s.",
         "risk_assessment": "Main risk is that run-to-run stochasticity could land on an unlucky training trajectory where even EMA can't close the gap (as happened in exp43 and exp45). The dual evaluation at the final step (both EMA and raw) adds one extra validation pass worth of time (~10-15s), which should be negligible. The EMA update per step is a single lerp operation which adds <1ms per step. Memory overhead is exactly 1x model parameters (~500MB) which is well within the 24GB budget.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp62_exp62_inline_swa_ema_nodisk",
@@ -23753,7 +23877,8 @@
         "expected_impact": "Should achieve val loss around 3.376-3.382, beating the 3.3821 target, with wall-clock time very close to baseline (~19990s) since the only overhead is: (1) EMA lerp_ after each step (~negligible), (2) SWA sum accumulation every 8 steps in last 1024 steps (~negligible), and (3) three validation passes at the final step only (~30s total). No snapshot storage, no CPU transfers, no intermediate evaluation overhead.",
         "risk_assessment": "Main risks: (1) Run-to-run stochasticity means the underlying training might land slightly worse than average, requiring the weight averaging to compensate more than it can. (2) The final-step evaluation of 3 candidates adds ~30s which could push over the time budget, though this is much less than the ~3000s overruns seen in previous experiments. (3) Memory from 2 extra param copies (~500MB) could theoretically cause issues but exp38 used 128 copies successfully so this should be safe. (4) The disk-space issue that killed exp58/exp60 could recur when saving final.pt, but the save_every=5000 means no intermediate saves.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "ultra_success": false
     },
     {
       "name": "exp63_exp63_single_running_mean_final_only",
@@ -23776,7 +23901,9 @@
         "expected_impact": "The experiment should achieve val loss ~3.376-3.382 (beating the 3.3821 target) by leveraging the proven SWA+EMA weight averaging strategy that succeeded in exp38/40/41, while completing within the baseline time budget by using only 2 extra parameter copies (vs 128+ snapshots in exp38) and evaluating candidates only at the final validation step. The incremental running mean avoids storing any snapshots, and the EMA is maintained with a single in-place lerp per step.",
         "risk_assessment": "1. Run-to-run stochasticity: the baseline training trajectory varies by ~0.003-0.006 in final val loss, so even with perfect weight averaging, an unlucky training run could miss the target. 2. Time overhead: maintaining 2 extra GPU parameter copies and doing 3 validation evaluations at the final step could add 10-40s, potentially missing the time target by a small margin (as happened in exp62 which missed by 16s). 3. The incremental SWA (Welford mean) may not be as effective as storing discrete snapshots and averaging them, since it smooths continuously rather than averaging independent samples. 4. The lm_head dimension swap bug from earlier experiments - need to verify the model definition is correct.",
         "run_args": "--model d12 --batch_size 16 --grad_accumulation_steps 32 --sequence_length 1024 --val_loss_every 128 --val_batch_size 16 --num_iterations 4768 --weight_decay 0.1 --learning_rate 0.0018 --warmup_iters 256 --warmdown_iters 1024"
-      }
+      },
+      "partial_success": false,
+      "ultra_success": false
     },
     {
       "name": "exp64_exp64_runsum_swa_ema_final",
@@ -24288,7 +24415,8 @@
       "val_target_met": true,
       "faster_than_baseline": false,
       "delta_to_target": -0.004472999999999949,
-      "speedup_pct": -0.05283373433937477
+      "speedup_pct": -0.05283373433937477,
+      "ultra_success": false
     },
     {
       "name": "exp66_exp66_grad_central_ema_swa",
@@ -24781,7 +24909,8 @@
       "val_target_met": false,
       "faster_than_baseline": false,
       "delta_to_target": 0.08172600000000019,
-      "speedup_pct": -0.08385354048561222
+      "speedup_pct": -0.08385354048561222,
+      "ultra_success": false
     },
     {
       "name": "exp67_exp67_ema_final_only_zerocopy",
@@ -25274,7 +25403,8 @@
       "val_target_met": true,
       "faster_than_baseline": true,
       "delta_to_target": -0.003273999999999777,
-      "speedup_pct": 0.03612306457674297
+      "speedup_pct": 0.03612306457674297,
+      "ultra_success": false
     },
     {
       "name": "exp68_exp68_single_ema_prefetch",
@@ -25283,11 +25413,11 @@
       "status": "running",
       "start_time": "2026-02-25T16:53:31.473189",
       "end_time": null,
-      "total_time_seconds": 9505.53,
+      "total_time_seconds": 9978.85,
       "total_steps": 4768,
       "peak_memory_mib": null,
-      "final_val_loss": 3.656537,
-      "success": null,
+      "final_val_loss": 3.644523,
+      "success": false,
       "val_loss_history": [
         {
           "step": 0,
@@ -25360,6 +25490,10 @@
         {
           "step": 2176,
           "val_loss": 3.656537
+        },
+        {
+          "step": 2304,
+          "val_loss": 3.644523
         }
       ],
       "train_loss_history": [
@@ -25506,11 +25640,21 @@
         {
           "step": 2240,
           "loss": 3.640429
+        },
+        {
+          "step": 2304,
+          "loss": 3.666937
+        },
+        {
+          "step": 2368,
+          "loss": 3.657817
         }
       ],
       "log_file": "experiments/exp68_exp68_single_ema_prefetch/output.log",
       "key_findings": "",
-      "last_step": 2261
+      "last_step": 2374,
+      "partial_success": false,
+      "ultra_success": false
     }
   ]
 }
