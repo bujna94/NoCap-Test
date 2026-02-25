@@ -25283,7 +25283,7 @@
       "status": "running",
       "start_time": "2026-02-25T16:53:31.473189",
       "end_time": null,
-      "total_time_seconds": 9145.3,
+      "total_time_seconds": 9505.53,
       "total_steps": 4768,
       "peak_memory_mib": null,
       "final_val_loss": 3.656537,
@@ -25498,11 +25498,19 @@
         {
           "step": 2112,
           "loss": 3.709481
+        },
+        {
+          "step": 2176,
+          "loss": 3.726232
+        },
+        {
+          "step": 2240,
+          "loss": 3.640429
         }
       ],
       "log_file": "experiments/exp68_exp68_single_ema_prefetch/output.log",
       "key_findings": "",
-      "last_step": 2176
+      "last_step": 2261
     }
   ]
 }
