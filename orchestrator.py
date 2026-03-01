@@ -11,6 +11,7 @@ Usage:
     python orchestrator.py [--skip-baseline] [--llm-provider claude|ollama]
 """
 import argparse
+import base64
 import json
 import os
 import re
@@ -28,10 +29,14 @@ PROJECT_ROOT = Path(__file__).parent.resolve()
 EXPERIMENTS_JSON = PROJECT_ROOT / "experiments.json"
 EXPERIMENTS_DIR = PROJECT_ROOT / "experiments"
 IDEA_MD = PROJECT_ROOT / "IDEA.md"
+DASHBOARD_LOG = PROJECT_ROOT / "dashboard_server.log"
 TARGET_VAL_LOSS = 3.3821
 ULTRA_TARGET_HOURS = 3.88
 ULTRA_TARGET_SECONDS = ULTRA_TARGET_HOURS * 3600
 CLAUDE_MODEL = "claude-opus-4-6"  # most capable for novel research ideas
+DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", os.environ.get("PORT", "8080")))
+DASHBOARD_USER = os.environ.get("DASHBOARD_USER", "admin")
+DASHBOARD_PASS = os.environ.get("DASHBOARD_PASS", "nocap2026")
 # By default, do not persist LLM prompt/response archives to disk.
 SAVE_LLM_IO_LOGS = os.environ.get("SAVE_LLM_IO_LOGS", "").lower() in {"1", "true", "yes"}
 
@@ -56,7 +61,12 @@ class LLMProvider:
 
 class ClaudeProvider(LLMProvider):
     def __init__(self, api_key: str, model: str = CLAUDE_MODEL):
-        import anthropic
+        try:
+            import anthropic
+        except ModuleNotFoundError:
+            print("ERROR: Missing dependency 'anthropic'. Install with: python3 -m pip install anthropic")
+            print("Or install all dependencies: python3 -m pip install -r requirements.txt")
+            sys.exit(1)
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model = model
 
@@ -172,6 +182,20 @@ def create_llm_provider(args) -> LLMProvider:
     else:
         print(f"ERROR: Unknown LLM provider: {provider}")
         sys.exit(1)
+
+
+def dashboard_ready() -> bool:
+    import urllib.request
+    auth = base64.b64encode(f"{DASHBOARD_USER}:{DASHBOARD_PASS}".encode("utf-8")).decode("ascii")
+    req = urllib.request.Request(
+        f"http://localhost:{DASHBOARD_PORT}/dashboard/index.html?json=experiments",
+        headers={"Authorization": f"Basic {auth}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            return 200 <= getattr(resp, "status", 200) < 300
+    except Exception:
+        return False
 
 # Fixed baseline run args - Claude should NOT change these
 BASELINE_RUN_ARGS = (
@@ -772,30 +796,50 @@ def main():
     print(f"  LLM:    {provider_label} ({model_label})")
     print(f"  Target: val_loss ≤ {TARGET_VAL_LOSS}")
     print(f"  Ultra:  val_loss ≤ {TARGET_VAL_LOSS} and time < {ULTRA_TARGET_HOURS:.2f}h")
-    print(f"  Dashboard: http://localhost:8080/dashboard/index.html")
+    print(f"  Dashboard: http://localhost:{DASHBOARD_PORT}/dashboard/index.html")
     print(f"  Save LLM I/O logs: {'ON' if SAVE_LLM_IO_LOGS else 'OFF'} (set SAVE_LLM_IO_LOGS=1 to enable)")
     print("=" * 60)
 
     # Start dashboard server if not running
-    try:
-        import urllib.request
-        urllib.request.urlopen("http://localhost:8080/experiments.json", timeout=2)
+    if dashboard_ready():
         print("[orchestrator] Dashboard already running.")
-    except Exception:
+    else:
         print("[orchestrator] Starting dashboard server...")
+        # Clear any stale dashboard process from previous runs.
+        subprocess.run(
+            ["pkill", "-f", str(PROJECT_ROOT / "dashboard" / "serve.py")],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(1)
         # Use the same Python that's running this script
-        subprocess.Popen(
+        DASHBOARD_LOG.parent.mkdir(parents=True, exist_ok=True)
+        logf = open(DASHBOARD_LOG, "a", encoding="utf-8")
+        logf.write(f"\n[{datetime.now().isoformat(timespec='seconds')}] starting dashboard\n")
+        logf.flush()
+        dash_proc = subprocess.Popen(
             [sys.executable, str(PROJECT_ROOT / "dashboard" / "serve.py")],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=logf,
+            stderr=logf,
             start_new_session=True,  # detach from parent so it survives orchestrator restart
         )
-        time.sleep(2)  # give it a moment to start
-        try:
-            urllib.request.urlopen("http://localhost:8080/experiments.json", timeout=3)
+
+        started = False
+        for _ in range(20):  # up to ~20 seconds
+            time.sleep(1)
+            if dashboard_ready():
+                started = True
+                break
+            if dash_proc.poll() is not None:
+                break
+
+        if started:
             print("[orchestrator] Dashboard started successfully.")
-        except Exception:
+        else:
             print("[orchestrator] WARNING: Dashboard may not have started. Run manually:")
             print(f"  {sys.executable} {PROJECT_ROOT / 'dashboard' / 'serve.py'} &")
+            print(f"  Check logs: {DASHBOARD_LOG}")
+            print(f"  If logs show 'Address already in use', stop whatever is on internal port {DASHBOARD_PORT}.")
 
     # Phase 1: Baseline
     run_baseline(skip=args.skip_baseline)
@@ -948,33 +992,39 @@ Please provide the COMPLETE fixed training script. Respond with ONLY the Python 
         data = load_experiments()
         exp_result = next((e for e in data["experiments"] if e["name"] == exp_name), None)
         if exp_result:
-            baseline_time = data.get("baseline_time_seconds", 0)
-            exp_time = exp_result.get("total_time_seconds", 0)
-            speedup = ((1 - exp_time / baseline_time) * 100) if baseline_time else 0
-            ultra_speedup = ((1 - exp_time / ULTRA_TARGET_SECONDS) * 100) if exp_time else 0
+            baseline_time = data.get("baseline_time_seconds")
+            exp_time = exp_result.get("total_time_seconds")
+            has_baseline_time = isinstance(baseline_time, (int, float)) and baseline_time > 0
+            has_exp_time = isinstance(exp_time, (int, float)) and exp_time > 0
+            speedup = ((1 - exp_time / baseline_time) * 100) if (has_baseline_time and has_exp_time) else None
+            ultra_speedup = ((1 - exp_time / ULTRA_TARGET_SECONDS) * 100) if has_exp_time else None
+            exp_time_str = f"{exp_time:.1f}s" if has_exp_time else "N/A"
+            baseline_time_str = f"{baseline_time:.1f}s" if has_baseline_time else "N/A"
+            speedup_str = f"{speedup:+.1f}%" if speedup is not None else "N/A"
+            ultra_speedup_str = f"{ultra_speedup:+.1f}%" if ultra_speedup is not None else "N/A"
             if exp_result.get("ultra_success"):
                 print(f"\n{'=' * 60}")
                 print(f"  ULTRA SUCCESS! {exp_name} beat val target and 3.88h!")
                 print(f"  Val loss: {exp_result['final_val_loss']:.6f} (target: {TARGET_VAL_LOSS})")
-                print(f"  Time: {exp_time:.1f}s vs 3.88h ({ULTRA_TARGET_SECONDS:.1f}s, {ultra_speedup:+.1f}%)")
-                if baseline_time:
-                    print(f"  Also vs baseline {baseline_time:.1f}s ({speedup:+.1f}%)")
+                print(f"  Time: {exp_time_str} vs 3.88h ({ULTRA_TARGET_SECONDS:.1f}s, {ultra_speedup_str})")
+                if has_baseline_time:
+                    print(f"  Also vs baseline {baseline_time_str} ({speedup_str})")
                 print(f"{'=' * 60}\n")
                 update_idea_md(exp_result, baseline_time)
             elif exp_result.get("success"):
                 print(f"\n{'=' * 60}")
                 print(f"  FULL SUCCESS! {exp_name} beat BOTH targets!")
                 print(f"  Val loss: {exp_result['final_val_loss']:.6f} (target: {TARGET_VAL_LOSS})")
-                print(f"  Time: {exp_time:.1f}s vs baseline {baseline_time:.1f}s ({speedup:+.1f}%)")
+                print(f"  Time: {exp_time_str} vs baseline {baseline_time_str} ({speedup_str})")
                 print(f"{'=' * 60}\n")
                 update_idea_md(exp_result, baseline_time)
                 # Keep going to find even better results
             elif exp_result.get("partial_success"):
                 val_ok = exp_result.get("final_val_loss") is not None and exp_result["final_val_loss"] <= TARGET_VAL_LOSS
-                time_ok = exp_time and baseline_time and exp_time < baseline_time
+                time_ok = has_exp_time and has_baseline_time and exp_time < baseline_time
                 print(f"\n  PARTIAL SUCCESS: {exp_name}")
                 print(f"  Val loss: {exp_result['final_val_loss']:.6f} ({'OK' if val_ok else 'MISS'})")
-                print(f"  Speed: {speedup:+.1f}% vs baseline ({'OK' if time_ok else 'MISS'})\n")
+                print(f"  Speed: {speedup_str} vs baseline ({'OK' if time_ok else 'MISS'})\n")
                 update_idea_md(exp_result, baseline_time)
 
         exp_num += 1
