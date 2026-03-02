@@ -12,6 +12,9 @@ from urllib.parse import parse_qs, urlsplit
 PORT = int(os.environ.get("DASHBOARD_PORT", os.environ.get("PORT", "8080")))
 SERVE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # project root
 EXPERIMENTS_JSON = Path(SERVE_DIR) / "experiments.json"
+EXPERIMENTS_DIR = Path(SERVE_DIR) / "experiments"
+RERUN_QUEUE_JSON = Path(SERVE_DIR) / "rerun_queue.json"
+IDEA_MD = Path(SERVE_DIR) / "IDEA.md"
 INDEX_HTML = Path(SERVE_DIR) / "dashboard" / "index.html"
 DASHBOARD_USER = os.environ.get("DASHBOARD_USER", "admin")
 DASHBOARD_PASS = os.environ.get("DASHBOARD_PASS", "nocap2026")
@@ -76,6 +79,46 @@ def load_experiments_payload():
         return {"target_val_loss": 3.3821, "baseline_time_seconds": None, "experiments": []}
 
 
+def load_rerun_queue():
+    if not RERUN_QUEUE_JSON.exists():
+        return []
+    try:
+        payload = json.loads(RERUN_QUEUE_JSON.read_text())
+    except Exception:
+        return []
+    if isinstance(payload, list):
+        return [str(x) for x in payload if isinstance(x, str)]
+    return []
+
+
+def load_idea_payload():
+    if not IDEA_MD.exists():
+        return {"content": "", "exists": False, "updated_at": None}
+    try:
+        stat = IDEA_MD.stat()
+        return {
+            "content": IDEA_MD.read_text(encoding="utf-8"),
+            "exists": True,
+            "updated_at": int(stat.st_mtime),
+        }
+    except Exception:
+        return {"content": "", "exists": False, "updated_at": None}
+
+
+def save_rerun_queue(queue):
+    tmp = RERUN_QUEUE_JSON.with_suffix(".tmp")
+    tmp.write_text(json.dumps(queue, indent=2))
+    tmp.replace(RERUN_QUEUE_JSON)
+
+
+def enqueue_rerun(exp_name):
+    queue = load_rerun_queue()
+    if exp_name not in queue:
+        queue.append(exp_name)
+        save_rerun_queue(queue)
+    return queue
+
+
 def render_index_with_bootstrap():
     html = INDEX_HTML.read_text(encoding="utf-8")
     payload = {"experiments": load_experiments_payload(), "system": get_system_stats()}
@@ -138,6 +181,13 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(EXPERIMENTS_JSON.read_bytes())
                 return
+            if kind == "idea":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.write(json.dumps(load_idea_payload()).encode())
+                return
 
         # Additional proxy-proof fallback for setups that strip query params
         # but preserve path prefixes.
@@ -160,6 +210,13 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             self.wfile.write(EXPERIMENTS_JSON.read_bytes())
+            return
+        if path.endswith("/dashboard/index.html/idea"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(json.dumps(load_idea_payload()).encode())
             return
 
         # Support both root and /dashboard-prefixed API paths for reverse proxies
@@ -185,7 +242,65 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(EXPERIMENTS_JSON.read_bytes())
             return
 
+        if path.startswith("/api/idea") or path.startswith("/dashboard/api/idea"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(json.dumps(load_idea_payload()).encode())
+            return
+
         return super().do_GET()
+
+    def do_POST(self):
+        if not check_auth(self):
+            return
+
+        parsed = urlsplit(self.path)
+        path = parsed.path
+        if path in {"/api/rerun", "/dashboard/api/rerun"}:
+            try:
+                content_length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                content_length = 0
+            body = self.rfile.read(content_length) if content_length > 0 else b""
+            try:
+                payload = json.loads(body.decode("utf-8") if body else "{}")
+            except Exception:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"error":"invalid JSON body"}')
+                return
+
+            exp_name = str(payload.get("exp_name", "")).strip()
+            if not exp_name:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"error":"exp_name is required"}')
+                return
+
+            run_sh = EXPERIMENTS_DIR / exp_name / "run.sh"
+            if not run_sh.exists():
+                self.send_response(404)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"error":"experiment run.sh not found"}')
+                return
+
+            queue = enqueue_rerun(exp_name)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True, "queued": exp_name, "queue_size": len(queue)}).encode())
+            return
+
+        self.send_response(404)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"error":"not found"}')
 
     def end_headers(self):
         origin = self.headers.get("Origin")
@@ -197,7 +312,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_header("Access-Control-Allow-Credentials", "true")
         else:
             self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Cache-Control")
         self.send_header("Access-Control-Max-Age", "600")
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")

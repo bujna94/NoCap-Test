@@ -44,6 +44,54 @@
   .chart-container { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 24px; position: relative; height: 400px; }
   .chart-container h2 { font-size: 1em; margin-bottom: 12px; color: var(--muted); }
   .chart-wrapper { position: relative; height: 360px; width: 100%; }
+  .idea-meta { color: var(--muted); font-size: 0.8em; margin-bottom: 8px; }
+  .idea-content {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.84em;
+    max-height: 360px;
+    overflow: auto;
+  }
+  .stat-card.clickable { cursor: pointer; user-select: none; }
+  .stat-card.clickable:hover { border-color: var(--accent); }
+  .modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.62);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    z-index: 1000;
+  }
+  .modal.open { display: flex; }
+  .modal-panel {
+    width: min(1200px, 96vw);
+    max-height: 90vh;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+  }
+  .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  .modal-header h2 { font-size: 1em; color: var(--muted); }
+  .modal-close {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 10px;
+    cursor: pointer;
+  }
+  .modal-close:hover { border-color: var(--accent); color: var(--accent); }
+  .modal-body { overflow: auto; }
 
   .experiments { display: grid; gap: 16px; min-width: 0; }
   .exp-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; min-width: 0; overflow: hidden; }
@@ -74,6 +122,24 @@
   .exp-card .progress-text { color: var(--muted); font-size: 0.75em; margin-top: 4px; text-align: right; }
   .exp-card .details-toggle { color: var(--accent); font-size: 0.8em; cursor: pointer; margin-top: 8px; user-select: none; }
   .exp-card .details-toggle:hover { text-decoration: underline; }
+  .exp-card .actions { margin-top: 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .exp-card .rerun-btn {
+    background: var(--bg);
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    padding: 5px 10px;
+    font-size: 0.8em;
+    cursor: pointer;
+  }
+  .exp-card .rerun-btn:hover { background: rgba(88,166,255,0.12); }
+  .exp-card .rerun-btn:disabled {
+    color: var(--muted);
+    border-color: var(--border);
+    background: var(--surface);
+    cursor: default;
+  }
+  .exp-card .rerun-status { color: var(--muted); font-size: 0.78em; }
   .exp-card .details { display: none; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 0.8em; }
   .exp-card .details.open { display: block; }
   .exp-card .details .detail-section { margin-bottom: 10px; }
@@ -107,6 +173,19 @@
 
 <div class="stats" id="stats"></div>
 
+<div class="modal" id="idea-modal" onclick="if(event.target===this) closeIdeaPopup()">
+  <div class="modal-panel">
+    <div class="modal-header">
+      <h2>IDEA.md</h2>
+      <button class="modal-close" onclick="closeIdeaPopup()">Close</button>
+    </div>
+    <div class="modal-body">
+      <div class="idea-meta" id="idea-meta">Loading...</div>
+      <div class="idea-content" id="idea-content">Loading IDEA.md...</div>
+    </div>
+  </div>
+</div>
+
 <div class="chart-container">
   <h2>Validation Loss Curves</h2>
   <div class="chart-wrapper"><canvas id="lossChart"></canvas></div>
@@ -121,21 +200,174 @@ const COLORS = ['#58a6ff','#3fb950','#f85149','#d29922','#bc8cff','#f778ba','#79
 let chart = null;
 let data = null;
 let sysData = null;
+let ideaData = null;
 let firstLoad = true;
 const openDetails = new Set();  // track which experiment details are open
 const ULTRA_TARGET_HOURS = 3.88;
 const ULTRA_TARGET_SECONDS = ULTRA_TARGET_HOURS * 3600;
+const SAME_PATH_BASE = new URL(window.location.pathname, window.location.origin);
+const SAME_PATH_NO_QUERY = `${window.location.origin}${window.location.pathname}`;
+const EXPERIMENTS_URLS = [
+  new URL(`${SAME_PATH_NO_QUERY}/experiments`),
+  new URL(`${SAME_PATH_BASE}?json=experiments`, window.location.origin),
+  new URL('./experiments.json', window.location.href),
+  new URL('../experiments.json', window.location.href),
+  new URL('/experiments.json', window.location.origin),
+  new URL('/dashboard/experiments.json', window.location.origin),
+];
+const SYSTEM_URLS = [
+  new URL(`${SAME_PATH_NO_QUERY}/system`),
+  new URL(`${SAME_PATH_BASE}?json=system`, window.location.origin),
+  new URL('./api/system', window.location.href),
+  new URL('../api/system', window.location.href),
+  new URL('/api/system', window.location.origin),
+  new URL('/dashboard/api/system', window.location.origin),
+];
+const IDEA_URLS = [
+  new URL(`${SAME_PATH_NO_QUERY}/idea`),
+  new URL(`${SAME_PATH_BASE}?json=idea`, window.location.origin),
+  new URL('./api/idea', window.location.href),
+  new URL('../api/idea', window.location.href),
+  new URL('/api/idea', window.location.origin),
+  new URL('/dashboard/api/idea', window.location.origin),
+];
+const RERUN_URLS = [
+  new URL('./api/rerun', window.location.href),
+  new URL('../api/rerun', window.location.href),
+  new URL('/api/rerun', window.location.origin),
+  new URL('/dashboard/api/rerun', window.location.origin),
+];
+const rerunBusy = new Set();
+const rerunStatus = new Map();
+
+async function fetchFirstJson(urls, ts) {
+  let lastError = null;
+  for (const url of urls) {
+    try {
+      const reqUrl = new URL(url.toString());
+      reqUrl.searchParams.set('t', String(ts));
+      const resp = await fetch(reqUrl.toString(), { cache: 'no-store', credentials: 'same-origin' });
+      if (!resp.ok) {
+        lastError = new Error(`${url.pathname} ${resp.status}`);
+        continue;
+      }
+
+      const text = await resp.text();
+      try {
+        return JSON.parse(text);
+      } catch {
+        // Common with reverse proxies that serve index.html for unknown paths.
+        lastError = new Error(`${url.pathname} returned non-JSON body`);
+      }
+    } catch (e) {
+      lastError = e;
+    }
+  }
+  throw lastError || new Error('all fetch attempts failed');
+}
+
+async function postFirstJson(urls, body) {
+  let lastError = null;
+  for (const url of urls) {
+    try {
+      const resp = await fetch(url.toString(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        cache: 'no-store',
+        credentials: 'same-origin',
+      });
+      if (!resp.ok) {
+        lastError = new Error(`${url.pathname} ${resp.status}`);
+        continue;
+      }
+      return await resp.json();
+    } catch (e) {
+      lastError = e;
+    }
+  }
+  throw lastError || new Error('all POST attempts failed');
+}
+
+function parseBootstrapFromHtml(html) {
+  const m = html.match(/window\.__DASHBOARD_BOOTSTRAP__\s*=\s*({[\s\S]*?});\s*<\/script>/);
+  if (!m) return null;
+  try {
+    return JSON.parse(m[1]);
+  } catch {
+    return null;
+  }
+}
+
+function applyBootstrapPayload(payload) {
+  let applied = false;
+  if (payload && payload.experiments) {
+    data = payload.experiments;
+    applied = true;
+  }
+  if (payload && payload.system) {
+    sysData = payload.system;
+    applied = true;
+  }
+  return applied;
+}
+
+async function fetchBootstrapPayload(ts) {
+  const reqUrl = new URL(window.location.href);
+  // Some proxies route query-string variants differently; fetch the exact
+  // working page URL for bootstrap extraction.
+  const resp = await fetch(reqUrl.toString(), { cache: 'no-store', credentials: 'same-origin' });
+  if (!resp.ok) throw new Error(`bootstrap html ${resp.status}`);
+  const html = await resp.text();
+  const payload = parseBootstrapFromHtml(html);
+  if (!payload) throw new Error('bootstrap payload missing');
+  return payload;
+}
 
 async function fetchData() {
+  const ts = Date.now();
+  let errParts = [];
+
   try {
-    const [expResp, sysResp] = await Promise.all([
-      fetch('/experiments.json?t=' + Date.now()),
-      fetch('/api/system?t=' + Date.now())
-    ]);
-    if (expResp.ok) data = await expResp.json();
-    if (sysResp.ok) sysData = await sysResp.json();
-    render();
-  } catch(e) { console.error('Fetch error:', e); }
+    data = await fetchFirstJson(EXPERIMENTS_URLS, ts);
+  } catch (e) {
+    errParts.push('experiments.json network error');
+    console.error('Fetch experiments.json error:', e);
+  }
+
+  try {
+    sysData = await fetchFirstJson(SYSTEM_URLS, ts);
+  } catch (e) {
+    errParts.push('/api/system network error');
+    console.error('Fetch /api/system error:', e);
+  }
+
+  try {
+    ideaData = await fetchFirstJson(IDEA_URLS, ts);
+  } catch (e) {
+    errParts.push('/api/idea network error');
+    console.error('Fetch /api/idea error:', e);
+  }
+
+  if (errParts.length > 0) {
+    try {
+      const payload = await fetchBootstrapPayload(ts);
+      if (applyBootstrapPayload(payload)) {
+        errParts = [];
+      }
+    } catch (e) {
+      console.error('Bootstrap fallback error:', e);
+    }
+  }
+
+  const statusEl = document.getElementById('refresh-status');
+  if (errParts.length > 0) {
+    statusEl.textContent = `Auto-refresh: 10s (fetch issue: ${errParts.join(', ')})`;
+  } else {
+    statusEl.textContent = 'Auto-refresh: 10s';
+  }
+
+  render();
 }
 
 function formatTime(seconds) {
@@ -152,6 +384,36 @@ function barColor(pct) {
   if (pct > 85) return 'red';
   if (pct > 60) return 'yellow';
   return 'green';
+}
+
+function escapeHtml(text) {
+  return String(text || '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+}
+
+function renderIdea() {
+  const metaEl = document.getElementById('idea-meta');
+  const contentEl = document.getElementById('idea-content');
+  if (!ideaData) {
+    metaEl.textContent = 'IDEA.md status unavailable (could not reach /api/idea).';
+    contentEl.textContent = 'Waiting for dashboard API response...';
+    return;
+  }
+  if (!ideaData.exists) {
+    metaEl.textContent = 'IDEA.md not found at repo root.';
+    contentEl.textContent = 'No content yet.';
+    return;
+  }
+  const updated = ideaData.updated_at ? new Date(ideaData.updated_at * 1000).toLocaleString() : 'unknown';
+  metaEl.textContent = `Path: /workspace/NoCap-Test/IDEA.md | Updated: ${updated}`;
+  contentEl.innerHTML = escapeHtml(ideaData.content || '(empty file)');
+}
+
+function openIdeaPopup() {
+  document.getElementById('idea-modal').classList.add('open');
+}
+
+function closeIdeaPopup() {
+  document.getElementById('idea-modal').classList.remove('open');
 }
 
 function renderSystem() {
@@ -248,14 +510,32 @@ function renderStats() {
     <div class="stat-card"><div class="label">Ultra Target</div><div class="value">${formatTime(ULTRA_TARGET_SECONDS)}</div></div>
     <div class="stat-card"><div class="label">Best Ultra Time</div><div class="value ${fastestUltra ? 'accent' : ''}">${fastestUltra ? formatTime(fastestUltra.total_time_seconds) : '-'}</div></div>
     <div class="stat-card"><div class="label">Best Speedup</div><div class="value ${fastestFull && baselineTime ? 'green' : ''}">${fastestFull && baselineTime ? ((1 - fastestFull.total_time_seconds / baselineTime) * 100).toFixed(1) + '%' : '-'}</div></div>
+    <div class="stat-card clickable" onclick="openIdeaPopup()"><div class="label">IDEA.md</div><div class="value accent">Open</div><div class="sub">click to view</div></div>
   `;
 }
 
 function buildDatasets() {
   const exps = data.experiments.filter(e => e.val_loss_history && e.val_loss_history.length > 0);
+  function median(values) {
+    if (!values.length) return null;
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  }
+
   const datasets = exps.map((exp, i) => ({
     label: exp.display_name || exp.name,
-    data: exp.val_loss_history.map(p => ({x: p.step, y: p.val_loss})),
+    data: (() => {
+      const raw = exp.val_loss_history
+        .filter(p => Number.isFinite(p.val_loss))
+        .map(p => ({ x: p.step, y: p.val_loss }));
+      if (raw.length === 0) return [];
+
+      // Drop extreme spikes so one broken run does not flatten all curves.
+      const med = median(raw.map(p => p.y));
+      const cap = Math.max(50, (med || 0) * 8);
+      return raw.filter(p => p.y <= cap);
+    })(),
     borderColor: COLORS[i % COLORS.length],
     backgroundColor: 'transparent',
     borderWidth: 2,
@@ -279,6 +559,7 @@ function buildDatasets() {
 function renderChart() {
   const canvas = document.getElementById('lossChart');
   const datasets = buildDatasets();
+  if (typeof Chart === 'undefined') return;
 
   if (chart) {
     // Update data in-place without animation on refresh
@@ -383,6 +664,9 @@ function renderExperiments() {
     } else { badgeClass = 'pending'; badgeText = exp.status; }
 
     const cardClass = outcome === 'ultra' ? 'success-ultra' : outcome === 'full' ? 'success-full' : outcome === 'partial' ? 'success-partial' : '';
+    const isBusy = rerunBusy.has(exp.name);
+    const statusText = rerunStatus.get(exp.name) || '';
+    const rerunDisabled = exp.status === 'running' || isBusy;
 
     return `
       <div class="exp-card ${cardClass}">
@@ -402,6 +686,10 @@ function renderExperiments() {
         ${progressHtml}
         ${progressText}
         ${exp.key_findings ? `<div class="findings">${exp.key_findings}</div>` : ''}
+        <div class="actions">
+          <button class="rerun-btn" onclick="queueRerun('${exp.name}')" ${rerunDisabled ? 'disabled' : ''}>${isBusy ? 'Queueing...' : 'Rerun'}</button>
+          ${statusText ? `<span class="rerun-status">${statusText}</span>` : ''}
+        </div>
         <div class="details-toggle" onclick="toggleDetails('${exp.name}', this);">${openDetails.has(exp.name) ? '▾ Hide details' : '▸ Show details'}</div>
         <div class="details${openDetails.has(exp.name) ? ' open' : ''}">
           <div class="detail-section">
@@ -430,6 +718,24 @@ function renderExperiments() {
   }).join('');
 }
 
+async function queueRerun(name) {
+  if (rerunBusy.has(name)) return;
+  rerunBusy.add(name);
+  rerunStatus.set(name, 'Adding to rerun queue...');
+  renderExperiments();
+  try {
+    const result = await postFirstJson(RERUN_URLS, { exp_name: name });
+    const size = Number.isFinite(result?.queue_size) ? result.queue_size : '?';
+    rerunStatus.set(name, `Queued (position ${size})`);
+  } catch (e) {
+    rerunStatus.set(name, 'Queue failed');
+    console.error('Rerun queue error:', e);
+  } finally {
+    rerunBusy.delete(name);
+    renderExperiments();
+  }
+}
+
 function toggleDetails(name, el) {
   if (openDetails.has(name)) {
     openDetails.delete(name);
@@ -446,11 +752,14 @@ function render() {
   if (!data) return;
   renderSystem();
   renderStats();
+  renderIdea();
   renderChart();
   renderExperiments();
   document.getElementById('last-update').textContent = 'Updated: ' + new Date().toLocaleTimeString();
 }
 
+applyBootstrapPayload(window.__DASHBOARD_BOOTSTRAP__);
+render();
 fetchData();
 setInterval(fetchData, 10000);
 </script>

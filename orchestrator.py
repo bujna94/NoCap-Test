@@ -30,6 +30,7 @@ EXPERIMENTS_JSON = PROJECT_ROOT / "experiments.json"
 EXPERIMENTS_DIR = PROJECT_ROOT / "experiments"
 IDEA_MD = PROJECT_ROOT / "IDEA.md"
 DASHBOARD_LOG = PROJECT_ROOT / "dashboard_server.log"
+RERUN_QUEUE_JSON = PROJECT_ROOT / "rerun_queue.json"
 TARGET_VAL_LOSS = 3.3821
 ULTRA_TARGET_HOURS = 3.88
 ULTRA_TARGET_SECONDS = ULTRA_TARGET_HOURS * 3600
@@ -225,6 +226,34 @@ def save_experiments(data):
     with open(tmp, "w") as f:
         json.dump(data, f, indent=2)
     tmp.rename(EXPERIMENTS_JSON)
+
+
+def load_rerun_queue():
+    if not RERUN_QUEUE_JSON.exists():
+        return []
+    try:
+        payload = json.loads(RERUN_QUEUE_JSON.read_text())
+    except Exception:
+        return []
+    if isinstance(payload, list):
+        return [str(x) for x in payload if isinstance(x, str)]
+    return []
+
+
+def save_rerun_queue(queue):
+    tmp = RERUN_QUEUE_JSON.with_suffix(".tmp")
+    with open(tmp, "w") as f:
+        json.dump(queue, f, indent=2)
+    tmp.rename(RERUN_QUEUE_JSON)
+
+
+def pop_next_rerun():
+    queue = load_rerun_queue()
+    if not queue:
+        return None
+    name = queue.pop(0)
+    save_rerun_queue(queue)
+    return name
 
 
 def get_baseline_script():
@@ -587,13 +616,13 @@ def smoke_test(exp_dir, exp_name):
         return False, str(e)
 
 
-def run_full_training(exp_name, run_sh_path, description):
+def run_full_training(exp_name, run_sh_path, description, display_name=None):
     """Run the full training via the experiment harness."""
     print(f"[orchestrator] Starting full training: {exp_name}")
     cmd = [
         sys.executable, str(PROJECT_ROOT / "run_experiment.py"),
         "--name", exp_name,
-        "--display-name", exp_name,
+        "--display-name", display_name or exp_name,
         "--run-sh", str(run_sh_path.relative_to(PROJECT_ROOT)),
         "--description", description,
     ]
@@ -648,6 +677,59 @@ Respond with just the analysis text, no JSON or formatting."""
     return llm.chat(prompt, max_tokens=1000)
 
 
+def analyze_and_report_after_run(llm, exp_name):
+    """Run post-training analysis + outcome enrichment + console summary."""
+    try:
+        llm.start()
+        findings = analyze_results(llm, exp_name)
+        llm.stop()
+        record_findings(exp_name, findings)
+        enrich_experiment_outcome(exp_name)
+        print(f"[orchestrator] Analysis: {findings}")
+    except Exception as e:
+        llm.stop()
+        print(f"[orchestrator] Failed to analyze results: {e}")
+
+    data = load_experiments()
+    exp_result = next((e for e in data["experiments"] if e["name"] == exp_name), None)
+    if not exp_result:
+        return
+
+    baseline_time = data.get("baseline_time_seconds")
+    exp_time = exp_result.get("total_time_seconds")
+    has_baseline_time = isinstance(baseline_time, (int, float)) and baseline_time > 0
+    has_exp_time = isinstance(exp_time, (int, float)) and exp_time > 0
+    speedup = ((1 - exp_time / baseline_time) * 100) if (has_baseline_time and has_exp_time) else None
+    ultra_speedup = ((1 - exp_time / ULTRA_TARGET_SECONDS) * 100) if has_exp_time else None
+    exp_time_str = f"{exp_time:.1f}s" if has_exp_time else "N/A"
+    baseline_time_str = f"{baseline_time:.1f}s" if has_baseline_time else "N/A"
+    speedup_str = f"{speedup:+.1f}%" if speedup is not None else "N/A"
+    ultra_speedup_str = f"{ultra_speedup:+.1f}%" if ultra_speedup is not None else "N/A"
+    if exp_result.get("ultra_success"):
+        print(f"\n{'=' * 60}")
+        print(f"  ULTRA SUCCESS! {exp_name} beat val target and 3.88h!")
+        print(f"  Val loss: {exp_result['final_val_loss']:.6f} (target: {TARGET_VAL_LOSS})")
+        print(f"  Time: {exp_time_str} vs 3.88h ({ULTRA_TARGET_SECONDS:.1f}s, {ultra_speedup_str})")
+        if has_baseline_time:
+            print(f"  Also vs baseline {baseline_time_str} ({speedup_str})")
+        print(f"{'=' * 60}\n")
+        update_idea_md(exp_result, baseline_time)
+    elif exp_result.get("success"):
+        print(f"\n{'=' * 60}")
+        print(f"  FULL SUCCESS! {exp_name} beat BOTH targets!")
+        print(f"  Val loss: {exp_result['final_val_loss']:.6f} (target: {TARGET_VAL_LOSS})")
+        print(f"  Time: {exp_time_str} vs baseline {baseline_time_str} ({speedup_str})")
+        print(f"{'=' * 60}\n")
+        update_idea_md(exp_result, baseline_time)
+    elif exp_result.get("partial_success"):
+        val_ok = exp_result.get("final_val_loss") is not None and exp_result["final_val_loss"] <= TARGET_VAL_LOSS
+        time_ok = has_exp_time and has_baseline_time and exp_time < baseline_time
+        print(f"\n  PARTIAL SUCCESS: {exp_name}")
+        print(f"  Val loss: {exp_result['final_val_loss']:.6f} ({'OK' if val_ok else 'MISS'})")
+        print(f"  Speed: {speedup_str} vs baseline ({'OK' if time_ok else 'MISS'})\n")
+        update_idea_md(exp_result, baseline_time)
+
+
 def self_critique_and_revise(llm, exp_data, exp_num):
     """Ask the model to critique and revise its own proposal toward full success."""
     critique_prompt = f"""You proposed experiment #{exp_num}. Critique it against the requirement:
@@ -668,10 +750,10 @@ Current proposal JSON:
 
 
 def update_idea_md(exp_result, baseline_time):
-    """Append concise notes for partial/full successes into IDEA.md."""
+    """Append concise notes for partial/full/ultra successes into IDEA.md."""
     if not exp_result:
         return
-    if not (exp_result.get("success") or exp_result.get("partial_success")):
+    if not (exp_result.get("ultra_success") or exp_result.get("success") or exp_result.get("partial_success")):
         return
 
     exp_name = exp_result.get("name", "")
@@ -852,6 +934,35 @@ def main():
         print(f"  EXPERIMENT LOOP - Iteration #{exp_num}")
         print(f"{'=' * 60}")
 
+        # Priority path: consume explicit reruns before asking LLM for a new design.
+        queued_exp = pop_next_rerun()
+        if queued_exp:
+            run_sh = EXPERIMENTS_DIR / queued_exp / "run.sh"
+            if not run_sh.exists():
+                print(f"[orchestrator] Skipping queued rerun; missing run.sh: {run_sh}")
+                continue
+
+            data = load_experiments()
+            prev = next((e for e in data["experiments"] if e["name"] == queued_exp), None)
+            prev_desc = (prev.get("description", "") if prev else "") or f"Rerun of {queued_exp}"
+            prev_display = (prev.get("display_name", "") if prev else "") or queued_exp
+            prev_metadata = prev.get("claude_metadata") if prev else None
+
+            print(f"[orchestrator] Processing queued rerun: {queued_exp}")
+            run_full_training(queued_exp, run_sh, prev_desc, display_name=prev_display)
+
+            if prev_metadata is not None:
+                data = load_experiments()
+                for exp in data["experiments"]:
+                    if exp["name"] == queued_exp:
+                        exp["claude_metadata"] = prev_metadata
+                        break
+                save_experiments(data)
+
+            analyze_and_report_after_run(llm, queued_exp)
+            print("[orchestrator] Queue item complete; checking queue again before designing new experiment...")
+            continue
+
         # Ask LLM to design the next experiment, self-critique, and pass quality gate.
         exp_data = None
         gate_passed = False
@@ -966,7 +1077,12 @@ Please provide the COMPLETE fixed training script. Respond with ONLY the Python 
 
         # Run full training
         description = exp_data.get("description", exp_data.get("hypothesis", ""))
-        returncode = run_full_training(exp_name, run_sh, description)
+        run_full_training(
+            exp_name,
+            run_sh,
+            description,
+            display_name=exp_data.get("display_name", exp_name),
+        )
 
         # Store Claude metadata for replication
         data = load_experiments()
@@ -976,56 +1092,7 @@ Please provide the COMPLETE fixed training script. Respond with ONLY the Python 
                 break
         save_experiments(data)
 
-        # Analyze results (training is done, GPU is free — start LLM, analyze, stop)
-        try:
-            llm.start()
-            findings = analyze_results(llm, exp_name)
-            llm.stop()
-            record_findings(exp_name, findings)
-            enrich_experiment_outcome(exp_name)
-            print(f"[orchestrator] Analysis: {findings}")
-        except Exception as e:
-            llm.stop()
-            print(f"[orchestrator] Failed to analyze results: {e}")
-
-        # Check for success
-        data = load_experiments()
-        exp_result = next((e for e in data["experiments"] if e["name"] == exp_name), None)
-        if exp_result:
-            baseline_time = data.get("baseline_time_seconds")
-            exp_time = exp_result.get("total_time_seconds")
-            has_baseline_time = isinstance(baseline_time, (int, float)) and baseline_time > 0
-            has_exp_time = isinstance(exp_time, (int, float)) and exp_time > 0
-            speedup = ((1 - exp_time / baseline_time) * 100) if (has_baseline_time and has_exp_time) else None
-            ultra_speedup = ((1 - exp_time / ULTRA_TARGET_SECONDS) * 100) if has_exp_time else None
-            exp_time_str = f"{exp_time:.1f}s" if has_exp_time else "N/A"
-            baseline_time_str = f"{baseline_time:.1f}s" if has_baseline_time else "N/A"
-            speedup_str = f"{speedup:+.1f}%" if speedup is not None else "N/A"
-            ultra_speedup_str = f"{ultra_speedup:+.1f}%" if ultra_speedup is not None else "N/A"
-            if exp_result.get("ultra_success"):
-                print(f"\n{'=' * 60}")
-                print(f"  ULTRA SUCCESS! {exp_name} beat val target and 3.88h!")
-                print(f"  Val loss: {exp_result['final_val_loss']:.6f} (target: {TARGET_VAL_LOSS})")
-                print(f"  Time: {exp_time_str} vs 3.88h ({ULTRA_TARGET_SECONDS:.1f}s, {ultra_speedup_str})")
-                if has_baseline_time:
-                    print(f"  Also vs baseline {baseline_time_str} ({speedup_str})")
-                print(f"{'=' * 60}\n")
-                update_idea_md(exp_result, baseline_time)
-            elif exp_result.get("success"):
-                print(f"\n{'=' * 60}")
-                print(f"  FULL SUCCESS! {exp_name} beat BOTH targets!")
-                print(f"  Val loss: {exp_result['final_val_loss']:.6f} (target: {TARGET_VAL_LOSS})")
-                print(f"  Time: {exp_time_str} vs baseline {baseline_time_str} ({speedup_str})")
-                print(f"{'=' * 60}\n")
-                update_idea_md(exp_result, baseline_time)
-                # Keep going to find even better results
-            elif exp_result.get("partial_success"):
-                val_ok = exp_result.get("final_val_loss") is not None and exp_result["final_val_loss"] <= TARGET_VAL_LOSS
-                time_ok = has_exp_time and has_baseline_time and exp_time < baseline_time
-                print(f"\n  PARTIAL SUCCESS: {exp_name}")
-                print(f"  Val loss: {exp_result['final_val_loss']:.6f} ({'OK' if val_ok else 'MISS'})")
-                print(f"  Speed: {speedup_str} vs baseline ({'OK' if time_ok else 'MISS'})\n")
-                update_idea_md(exp_result, baseline_time)
+        analyze_and_report_after_run(llm, exp_name)
 
         exp_num += 1
         print(f"[orchestrator] Moving to next experiment...")
