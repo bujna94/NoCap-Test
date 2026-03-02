@@ -40,6 +40,7 @@ DASHBOARD_USER = os.environ.get("DASHBOARD_USER", "admin")
 DASHBOARD_PASS = os.environ.get("DASHBOARD_PASS", "nocap2026")
 # By default, do not persist LLM prompt/response archives to disk.
 SAVE_LLM_IO_LOGS = os.environ.get("SAVE_LLM_IO_LOGS", "").lower() in {"1", "true", "yes"}
+AUTO_PUSH_IDEA_MD = os.environ.get("AUTO_PUSH_IDEA_MD", "1").lower() in {"1", "true", "yes"}
 
 
 # ---------------------------------------------------------------------------
@@ -799,6 +800,83 @@ def update_idea_md(exp_result, baseline_time):
     ]
     with open(IDEA_MD, "a") as f:
         f.write("\n".join(lines) + "\n")
+
+    auto_commit_and_push_idea_md(exp_name, outcome)
+
+
+def auto_commit_and_push_idea_md(exp_name, outcome):
+    """Best-effort auto-push for IDEA.md updates; never raises."""
+    if not AUTO_PUSH_IDEA_MD:
+        return
+
+    try:
+        add_result = subprocess.run(
+            ["git", "add", "IDEA.md"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        if add_result.returncode != 0:
+            print(f"[orchestrator] WARNING: IDEA.md auto-push add failed: {add_result.stderr.strip()}")
+            return
+
+        # Exit early when nothing new was staged (e.g., duplicate entry prevented).
+        staged_check = subprocess.run(
+            ["git", "diff", "--cached", "--quiet", "--", "IDEA.md"],
+            cwd=PROJECT_ROOT,
+            timeout=15,
+            check=False,
+        )
+        if staged_check.returncode == 0:
+            return
+        if staged_check.returncode != 1:
+            print("[orchestrator] WARNING: IDEA.md auto-push staged check failed.")
+            return
+
+        commit_msg = f"Update IDEA.md: {exp_name} ({outcome})"
+        commit_result = subprocess.run(
+            ["git", "commit", "-m", commit_msg, "--", "IDEA.md"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        if commit_result.returncode != 0:
+            stderr = commit_result.stderr.strip() or commit_result.stdout.strip()
+            print(f"[orchestrator] WARNING: IDEA.md auto-push commit failed: {stderr}")
+            return
+
+        branch_result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        branch = branch_result.stdout.strip() if branch_result.returncode == 0 else ""
+        if not branch:
+            print("[orchestrator] WARNING: IDEA.md auto-push could not determine branch.")
+            return
+
+        push_result = subprocess.run(
+            ["git", "push", "origin", branch],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
+        )
+        if push_result.returncode == 0:
+            print(f"[orchestrator] IDEA.md auto-pushed to origin/{branch}.")
+        else:
+            stderr = push_result.stderr.strip() or push_result.stdout.strip()
+            print(f"[orchestrator] WARNING: IDEA.md auto-push failed: {stderr}")
+    except Exception as e:
+        print(f"[orchestrator] WARNING: IDEA.md auto-push error: {e}")
 
 
 def run_baseline(skip=False):
