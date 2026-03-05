@@ -35,7 +35,7 @@ TARGET_VAL_LOSS = 3.3821
 ULTRA_TARGET_HOURS = 3.88
 ULTRA_TARGET_SECONDS = ULTRA_TARGET_HOURS * 3600
 CLAUDE_MODEL = "claude-opus-4-6"  # most capable for novel research ideas
-DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", os.environ.get("PORT", "8080")))
+DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", os.environ.get("PORT", "8081")))
 DASHBOARD_USER = os.environ.get("DASHBOARD_USER", "admin")
 DASHBOARD_PASS = os.environ.get("DASHBOARD_PASS", "nocap2026")
 # By default, do not persist LLM prompt/response archives to disk.

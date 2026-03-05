@@ -9,7 +9,7 @@ import subprocess
 import socketserver
 from urllib.parse import parse_qs, urlsplit
 
-PORT = int(os.environ.get("DASHBOARD_PORT", os.environ.get("PORT", "8080")))
+PORT = int(os.environ.get("DASHBOARD_PORT", os.environ.get("PORT", "8081")))
 SERVE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # project root
 EXPERIMENTS_JSON = Path(SERVE_DIR) / "experiments.json"
 EXPERIMENTS_DIR = Path(SERVE_DIR) / "experiments"

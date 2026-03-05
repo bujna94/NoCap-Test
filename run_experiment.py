@@ -55,8 +55,8 @@ def parse_log(log_path):
     last_train_time = None
     with open(log_path, "r") as f:
         for line in f:
-            # Validation loss: step:N/TOTAL | val loss F
-            m = re.search(r"step:(\d+)/(\d+) \| val loss ([\d.]+)", line)
+            # Validation loss: step:N/TOTAL | val loss F [optional "(approx)"]
+            m = re.search(r"step:(\d+)/(\d+) \| val loss ([\d.]+)(?:\s+\(approx\))?", line)
             if m:
                 step, total, val_loss = int(m.group(1)), int(m.group(2)), float(m.group(3))
                 result["val_loss_history"].append({"step": step, "val_loss": val_loss})
