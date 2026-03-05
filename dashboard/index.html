@@ -515,13 +515,24 @@ function renderStats() {
 }
 
 function buildDatasets() {
-  const exps = data.experiments.filter(e => e.val_loss_history && e.val_loss_history.length > 0);
+  const allExps = data.experiments.filter(e => e.val_loss_history && e.val_loss_history.length > 0);
   function median(values) {
     if (!values.length) return null;
     const sorted = [...values].sort((a, b) => a - b);
     const mid = Math.floor(sorted.length / 2);
     return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
   }
+
+  // Filter out experiments whose minimum val loss is above a threshold (broken runs).
+  // Normal runs converge toward ~3.3-11; anything whose best loss > 15 is an outlier.
+  const VAL_LOSS_CHART_THRESHOLD = 15;
+  const exps = allExps.filter(exp => {
+    const losses = exp.val_loss_history
+      .filter(p => Number.isFinite(p.val_loss))
+      .map(p => p.val_loss);
+    if (losses.length === 0) return false;
+    return Math.min(...losses) <= VAL_LOSS_CHART_THRESHOLD;
+  });
 
   const datasets = exps.map((exp, i) => ({
     label: exp.display_name || exp.name,
@@ -577,7 +588,7 @@ function renderChart() {
         animation: { duration: 800 },
         scales: {
           x: { title: { display: true, text: 'Step', color: '#8b949e' }, grid: { color: '#21262d' }, ticks: { color: '#8b949e' } },
-          y: { title: { display: true, text: 'Val Loss', color: '#8b949e' }, grid: { color: '#21262d' }, ticks: { color: '#8b949e' }, min: 3.0 }
+          y: { title: { display: true, text: 'Val Loss', color: '#8b949e' }, grid: { color: '#21262d' }, ticks: { color: '#8b949e' }, min: 3.0, suggestedMax: 12 }
         },
         plugins: {
           legend: { labels: { color: '#e6edf3', usePointStyle: true, pointStyle: 'line' } },
