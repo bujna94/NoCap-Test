@@ -1,4 +1,4 @@
-# 🤖 160 Autonomous GPT-2 Training Experiments — Fully Vibe-Coded
+# 🤖 160 Autonomous GPT-2 Training Experiments — Proudly Vibe-Coded
 
 > An AI-driven experiment loop that autonomously designed, ran, and evaluated 160 GPT-2 training optimizations on the [BottleCapAI benchmark](https://github.com/BottleCapAI/modded-nanogpt), achieving **7% speedup** and **val loss 3.2999** (target ≤ 3.3821).
 
