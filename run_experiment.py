@@ -76,6 +76,15 @@ def parse_log(log_path):
                 # Sample train loss every 64 steps to keep JSON small
                 if step % 64 == 0:
                     result["train_loss_history"].append({"step": step, "loss": loss})
+            else:
+                # Training line without loss: step:N/TOTAL | train_time:Fs | step_avg:Fms
+                m = re.search(r"step:(\d+)/(\d+) \| train_time:([\d.]+)s", line)
+                if m:
+                    step = int(m.group(1))
+                    train_time = float(m.group(3))
+                    last_train_time = train_time
+                    result["total_steps"] = int(m.group(2))
+                    result["last_step"] = max(result["last_step"], step)
 
             # Peak memory
             m = re.search(r"peak memory consumption: (\d+) MiB", line)

@@ -3,93 +3,72 @@ Port: 8081 (override with DASHBOARD_PORT or PORT)
 Dashboard: http://localhost:8081/dashboard/index.html
 Serving from: /workspace/NoCap-Test
 Press Ctrl+C to stop
-
-[2026-03-04T20:17:17] starting dashboard
-Auth: user=admin (set DASHBOARD_USER/DASHBOARD_PASS env to change)
-Port: 8081 (override with DASHBOARD_PORT or PORT)
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 44460)
 Traceback (most recent call last):
-  File "/workspace/NoCap-Test/dashboard/serve.py", line 333, in <module>
-    with ThreadedHTTPServer(("", PORT), DashboardHandler) as httpd:
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/lib/python3.12/socketserver.py", line 457, in __init__
-    self.server_bind()
-  File "/usr/lib/python3.12/http/server.py", line 136, in server_bind
-    socketserver.TCPServer.server_bind(self)
-  File "/usr/lib/python3.12/socketserver.py", line 473, in server_bind
-    self.socket.bind(self.server_address)
-OSError: [Errno 98] Address already in use
+  File "/venv/main/lib/python3.12/socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+  File "/venv/main/lib/python3.12/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "/workspace/NoCap-Test/dashboard/serve.py", line 135, in __init__
+    super().__init__(*args, directory=SERVE_DIR, **kwargs)
+  File "/venv/main/lib/python3.12/http/server.py", line 672, in __init__
+    super().__init__(*args, **kwargs)
+  File "/venv/main/lib/python3.12/socketserver.py", line 766, in __init__
+    self.handle()
+  File "/venv/main/lib/python3.12/http/server.py", line 436, in handle
+    self.handle_one_request()
+  File "/venv/main/lib/python3.12/http/server.py", line 424, in handle_one_request
+    method()
+  File "/workspace/NoCap-Test/dashboard/serve.py", line 199, in do_GET
+    self.wfile.write(json.dumps(get_system_stats()).encode())
+  File "/venv/main/lib/python3.12/socketserver.py", line 845, in write
+    self._sock.sendall(b)
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+--------------------------------------------------------------------------------
 
-[2026-03-05T10:59:59] starting dashboard
-Auth: user=admin (set DASHBOARD_USER/DASHBOARD_PASS env to change)
-Port: 8081 (override with DASHBOARD_PORT or PORT)
+Exception occurred during processing of request from Exception occurred during processing of request from ('127.0.0.1', 44474)
+('127.0.0.1', 44436)
 Traceback (most recent call last):
-  File "/workspace/NoCap-Test/dashboard/serve.py", line 333, in <module>
-    with ThreadedHTTPServer(("", PORT), DashboardHandler) as httpd:
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/lib/python3.12/socketserver.py", line 457, in __init__
-    self.server_bind()
-  File "/usr/lib/python3.12/http/server.py", line 136, in server_bind
-    socketserver.TCPServer.server_bind(self)
-  File "/usr/lib/python3.12/socketserver.py", line 473, in server_bind
-    self.socket.bind(self.server_address)
-OSError: [Errno 98] Address already in use
-
-[2026-03-05T11:00:32] starting dashboard
-Auth: user=admin (set DASHBOARD_USER/DASHBOARD_PASS env to change)
-Port: 8081 (override with DASHBOARD_PORT or PORT)
 Traceback (most recent call last):
-  File "/workspace/NoCap-Test/dashboard/serve.py", line 333, in <module>
-    with ThreadedHTTPServer(("", PORT), DashboardHandler) as httpd:
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/lib/python3.12/socketserver.py", line 457, in __init__
-    self.server_bind()
-  File "/usr/lib/python3.12/http/server.py", line 136, in server_bind
-    socketserver.TCPServer.server_bind(self)
-  File "/usr/lib/python3.12/socketserver.py", line 473, in server_bind
-    self.socket.bind(self.server_address)
-OSError: [Errno 98] Address already in use
-
-[2026-03-05T11:08:43] starting dashboard
-Auth: user=admin (set DASHBOARD_USER/DASHBOARD_PASS env to change)
-Port: 8081 (override with DASHBOARD_PORT or PORT)
-Traceback (most recent call last):
-  File "/workspace/NoCap-Test/dashboard/serve.py", line 333, in <module>
-    with ThreadedHTTPServer(("", PORT), DashboardHandler) as httpd:
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/lib/python3.12/socketserver.py", line 457, in __init__
-    self.server_bind()
-  File "/usr/lib/python3.12/http/server.py", line 136, in server_bind
-    socketserver.TCPServer.server_bind(self)
-  File "/usr/lib/python3.12/socketserver.py", line 473, in server_bind
-    self.socket.bind(self.server_address)
-OSError: [Errno 98] Address already in use
-
-[2026-03-05T11:08:57] starting dashboard
-Auth: user=admin (set DASHBOARD_USER/DASHBOARD_PASS env to change)
-Port: 8081 (override with DASHBOARD_PORT or PORT)
-Traceback (most recent call last):
-  File "/workspace/NoCap-Test/dashboard/serve.py", line 333, in <module>
-    with ThreadedHTTPServer(("", PORT), DashboardHandler) as httpd:
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/lib/python3.12/socketserver.py", line 457, in __init__
-    self.server_bind()
-  File "/usr/lib/python3.12/http/server.py", line 136, in server_bind
-    socketserver.TCPServer.server_bind(self)
-  File "/usr/lib/python3.12/socketserver.py", line 473, in server_bind
-    self.socket.bind(self.server_address)
-OSError: [Errno 98] Address already in use
-
-[2026-03-05T11:17:10] starting dashboard
-Auth: user=admin (set DASHBOARD_USER/DASHBOARD_PASS env to change)
-Port: 8081 (override with DASHBOARD_PORT or PORT)
-Traceback (most recent call last):
-  File "/workspace/NoCap-Test/dashboard/serve.py", line 333, in <module>
-    with ThreadedHTTPServer(("", PORT), DashboardHandler) as httpd:
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/lib/python3.12/socketserver.py", line 457, in __init__
-    self.server_bind()
-  File "/usr/lib/python3.12/http/server.py", line 136, in server_bind
-    socketserver.TCPServer.server_bind(self)
-  File "/usr/lib/python3.12/socketserver.py", line 473, in server_bind
-    self.socket.bind(self.server_address)
-OSError: [Errno 98] Address already in use
+  File "/venv/main/lib/python3.12/socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+  File "/venv/main/lib/python3.12/socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+  File "/venv/main/lib/python3.12/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "/workspace/NoCap-Test/dashboard/serve.py", line 135, in __init__
+    super().__init__(*args, directory=SERVE_DIR, **kwargs)
+  File "/venv/main/lib/python3.12/http/server.py", line 672, in __init__
+    super().__init__(*args, **kwargs)
+  File "/venv/main/lib/python3.12/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "/venv/main/lib/python3.12/socketserver.py", line 766, in __init__
+    self.handle()
+  File "/venv/main/lib/python3.12/http/server.py", line 436, in handle
+    self.handle_one_request()
+  File "/workspace/NoCap-Test/dashboard/serve.py", line 135, in __init__
+    super().__init__(*args, directory=SERVE_DIR, **kwargs)
+  File "/venv/main/lib/python3.12/http/server.py", line 424, in handle_one_request
+    method()
+  File "/workspace/NoCap-Test/dashboard/serve.py", line 199, in do_GET
+    self.wfile.write(json.dumps(get_system_stats()).encode())
+  File "/venv/main/lib/python3.12/http/server.py", line 672, in __init__
+    super().__init__(*args, **kwargs)
+  File "/venv/main/lib/python3.12/socketserver.py", line 845, in write
+    self._sock.sendall(b)
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+  File "/venv/main/lib/python3.12/socketserver.py", line 766, in __init__
+    self.handle()
+  File "/venv/main/lib/python3.12/http/server.py", line 436, in handle
+    self.handle_one_request()
+  File "/venv/main/lib/python3.12/http/server.py", line 424, in handle_one_request
+    method()
+  File "/workspace/NoCap-Test/dashboard/serve.py", line 199, in do_GET
+    self.wfile.write(json.dumps(get_system_stats()).encode())
+  File "/venv/main/lib/python3.12/socketserver.py", line 845, in write
+    self._sock.sendall(b)
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
