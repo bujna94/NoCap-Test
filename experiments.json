@@ -37093,7 +37093,7 @@
       "status": "running",
       "start_time": "2026-03-08T17:43:24.217226",
       "end_time": null,
-      "total_time_seconds": 11549.66,
+      "total_time_seconds": 12073.22,
       "total_steps": 3600,
       "peak_memory_mib": null,
       "final_val_loss": 3.6692,
@@ -37217,11 +37217,15 @@
         {
           "step": 2816,
           "loss": 3.714093
+        },
+        {
+          "step": 2944,
+          "loss": 3.641345
         }
       ],
       "log_file": "experiments/exp152_exp152_ultra_3600steps_highLR/output.log",
       "key_findings": "",
-      "last_step": 2816
+      "last_step": 2944
     }
   ]
 }
